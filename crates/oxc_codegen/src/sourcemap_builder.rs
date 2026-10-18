@@ -54,7 +54,7 @@ pub struct SourcemapBuilder<'a> {
     tokens: Vec<oxc_sourcemap::Token>,
     last_generated_update: usize,
     last_position: Option<u32>,
-    line_offset_tables: LineOffsetTables,
+    line_offset_tables: std::sync::Arc<LineOffsetTables>,
     generated_line: u32,
     generated_column: u32,
     /// Tracks the last accessed line index to optimize sequential lookups in `search_original_line_and_column`.
@@ -65,7 +65,20 @@ pub struct SourcemapBuilder<'a> {
 
 impl<'a> SourcemapBuilder<'a> {
     pub fn new(path: &Path, source_text: &'a str) -> Self {
-        let line_offset_tables = Self::generate_line_offset_tables(source_text);
+        Self::new_with_tables(
+            path,
+            source_text,
+            std::sync::Arc::new(Self::generate_line_offset_tables(source_text)),
+        )
+    }
+
+    /// perf/bun-gap: reuse line offset tables computed once for `source_text` (several
+    /// codegens print parts of one program in parallel).
+    pub fn new_with_tables(
+        path: &Path,
+        source_text: &'a str,
+        line_offset_tables: std::sync::Arc<LineOffsetTables>,
+    ) -> Self {
         // Estimate mapping and name counts from source length to reduce reallocations.
         let source_len = source_text.len();
         Self {
@@ -382,7 +395,7 @@ impl<'a> SourcemapBuilder<'a> {
         self.last_generated_update = len;
     }
 
-    fn generate_line_offset_tables(content: &str) -> LineOffsetTables {
+    pub fn generate_line_offset_tables(content: &str) -> LineOffsetTables {
         let mut lines = Vec::with_capacity(content.len() / 24 + 1);
         let mut column_offsets = IndexVec::new();
 

@@ -31,6 +31,14 @@ mod operator;
 mod options;
 #[cfg(feature = "sourcemap")]
 mod sourcemap_builder;
+#[cfg(feature = "sourcemap")]
+pub use sourcemap_builder::LineOffsetTables;
+
+/// perf/bun-gap: build the sourcemap line offset tables of `source_text` once, to share them.
+#[cfg(feature = "sourcemap")]
+pub fn generate_line_offset_tables(source_text: &str) -> std::sync::Arc<LineOffsetTables> {
+    std::sync::Arc::new(SourcemapBuilder::generate_line_offset_tables(source_text))
+}
 mod str;
 
 use binary_expr_visitor::BinaryExpressionVisitor;
@@ -91,6 +99,12 @@ pub struct Codegen<'a> {
     source_text: Option<&'a str>,
 
     scoping: Option<Scoping>,
+
+    /// perf/bun-gap: borrowed scoping (see [`Codegen::with_scoping_ptr`]). Used when `scoping` is `None`.
+    scoping_ptr: Option<std::ptr::NonNull<Scoping>>,
+
+    /// perf/bun-gap: precomputed line offset tables for the sourcemap builder.
+    sourcemap_line_tables: Option<std::sync::Arc<LineOffsetTables>>,
 
     /// Private member name mappings for mangling
     private_member_mappings: Option<IndexVec<ClassId, FxHashMap<String, CompactStr>>>,
@@ -196,6 +210,8 @@ impl<'a> Codegen<'a> {
             options,
             source_text: None,
             scoping: None,
+            scoping_ptr: None,
+            sourcemap_line_tables: None,
             private_member_mappings: None,
             code: CodeBuffer::default(),
             needs_semicolon: false,
@@ -254,6 +270,38 @@ impl<'a> Codegen<'a> {
         self
     }
 
+    /// perf/bun-gap: use a borrowed [`Scoping`] (several codegens print parts of one program in
+    /// parallel and read the same mangled names).
+    ///
+    /// # Safety
+    /// `scoping` must outlive this `Codegen` and must not be mutated while it is alive.
+    #[must_use]
+    pub unsafe fn with_scoping_ptr(mut self, scoping: &Scoping) -> Self {
+        self.scoping_ptr = Some(std::ptr::NonNull::from(scoping));
+        self
+    }
+
+    /// perf/bun-gap: reuse line offset tables of `program.source_text`.
+    #[must_use]
+    pub fn with_sourcemap_line_tables(mut self, tables: std::sync::Arc<LineOffsetTables>) -> Self {
+        self.sourcemap_line_tables = Some(tables);
+        self
+    }
+
+    /// perf/bun-gap: the first class printed gets this `ClassId` (a part of a program printed
+    /// after `n` classes were printed by earlier parts).
+    #[must_use]
+    pub fn with_class_id_offset(mut self, n: usize) -> Self {
+        self.next_class_id = ClassId::from_usize(n);
+        self
+    }
+
+    #[inline]
+    fn scoping_ref(&self) -> Option<&Scoping> {
+        // SAFETY: see `with_scoping_ptr`.
+        self.scoping.as_ref().or_else(|| self.scoping_ptr.map(|p| unsafe { p.as_ref() }))
+    }
+
     /// Set private member name mappings for mangling.
     ///
     /// This allows renaming of private class members like `#field` -> `#a`.
@@ -279,7 +327,10 @@ impl<'a> Codegen<'a> {
         self.build_comments(&program.comments);
         #[cfg(feature = "sourcemap")]
         if let Some(path) = &self.options.source_map_path {
-            self.sourcemap_builder = Some(SourcemapBuilder::new(path, program.source_text));
+            self.sourcemap_builder = Some(match self.sourcemap_line_tables.take() {
+                Some(tables) => SourcemapBuilder::new_with_tables(path, program.source_text, tables),
+                None => SourcemapBuilder::new(path, program.source_text),
+            });
         }
         program.print(&mut self, Context::default());
         let legal_comments = self.handle_eof_linked_or_external_comments(program);
@@ -1038,7 +1089,7 @@ impl<'a> Codegen<'a> {
 
     #[inline]
     fn get_identifier_reference_name(&self, reference: &IdentifierReference<'a>) -> &'a str {
-        if let Some(scoping) = &self.scoping
+        if let Some(scoping) = self.scoping_ref()
             && let Some(reference_id) = reference.reference_id.get()
             && let Some(name) = scoping.get_reference_name(reference_id)
         {
@@ -1050,7 +1101,7 @@ impl<'a> Codegen<'a> {
 
     #[inline]
     fn get_binding_identifier_name(&self, ident: &BindingIdentifier<'a>) -> &'a str {
-        if let Some(scoping) = &self.scoping
+        if let Some(scoping) = self.scoping_ref()
             && let Some(symbol_id) = ident.symbol_id.get()
         {
             let name = scoping.symbol_name(symbol_id);
