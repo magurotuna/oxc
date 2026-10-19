@@ -441,16 +441,35 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
         DroppedSubtreeCollector::new(&mut self.state.pass_changes)
     }
 
+    /// perf/bun-gap (PoC instrumentation): `record_ast_change` plus, under
+    /// `OXC_BG_PASS_STATS=1`, the rule site and the enclosing function of the change.
+    #[track_caller]
+    #[inline]
+    fn bg_record_ast_change(&mut self) {
+        self.state.record_ast_change();
+        if self.state.bg.is_some() || self.state.bg_skip.is_some() {
+            let site = std::panic::Location::caller();
+            let function_scope = crate::bg_stats::enclosing_fn(self.scoping(), self.current_scope_id());
+            if let Some(bg) = self.state.bg.as_mut() {
+                bg.record(site, function_scope);
+            }
+            if let Some(skip) = self.state.bg_skip.as_mut() {
+                skip.record_change(function_scope);
+            }
+        }
+    }
+
     /// Replace an expression slot. Marks the pass as having mutated the AST.
     ///
     /// Prefer this over a direct `*slot = new;` and [`Self::notice_change`] pair —
     /// the typed helper keeps dropped-subtree bookkeeping, the slot update,
     /// and the pass revisit request together.
+    #[track_caller]
     #[inline]
     pub fn replace_expression(&mut self, slot: &mut Expression<'a>, new: Expression<'a>) {
         self.dropped_subtree_collector().visit_expression(slot);
         *slot = new;
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Replace an expression slot with a value built from the owned old expression.
@@ -458,6 +477,7 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     /// Prefer this over `take_in` followed by [`Self::replace_expression`]. It avoids
     /// leaving a dummy node in the arena. The closure must report any discarded
     /// subtrees through the `drop_*` helpers; values moved into its result are not dropped.
+    #[track_caller]
     #[inline]
     pub fn replace_expression_with(
         &mut self,
@@ -466,7 +486,7 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     ) {
         let ctx = &mut *self;
         slot.replace_with(|old| replacer(old, ctx));
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Replace a statement slot. Marks the pass as having mutated the AST.
@@ -474,11 +494,12 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     /// Prefer this over a direct `*slot = new;` and [`Self::notice_change`] pair —
     /// the typed helper keeps dropped-subtree bookkeeping, the slot update,
     /// and the pass revisit request together.
+    #[track_caller]
     #[inline]
     pub fn replace_statement(&mut self, slot: &mut Statement<'a>, new: Statement<'a>) {
         self.dropped_subtree_collector().visit_statement(slot);
         *slot = new;
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Replace a statement slot with a value built from the owned old statement.
@@ -486,6 +507,7 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     /// Prefer this over `take_in` followed by [`Self::replace_statement`]. It avoids
     /// leaving a dummy node in the arena. The closure must report any discarded
     /// subtrees through the `drop_*` helpers; values moved into its result are not dropped.
+    #[track_caller]
     #[inline]
     pub fn replace_statement_with(
         &mut self,
@@ -494,10 +516,11 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     ) {
         let ctx = &mut *self;
         slot.replace_with(|old| replacer(old, ctx));
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Replace an assignment-target-property slot. Marks the pass as having mutated the AST.
+    #[track_caller]
     #[inline]
     pub fn replace_assignment_target_property(
         &mut self,
@@ -506,19 +529,21 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     ) {
         self.dropped_subtree_collector().visit_assignment_target_property(slot);
         *slot = new;
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Replace a property-key slot. Marks the pass as having mutated the AST.
+    #[track_caller]
     #[inline]
     pub fn replace_property_key(&mut self, slot: &mut PropertyKey<'a>, new: PropertyKey<'a>) {
         self.dropped_subtree_collector().visit_property_key(slot);
         *slot = new;
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Replace a `for-in` / `for-of` statement's `left` slot. Same contract
     /// as `replace_expression`.
+    #[track_caller]
     #[inline]
     pub fn replace_for_statement_left(
         &mut self,
@@ -527,16 +552,17 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     ) {
         self.dropped_subtree_collector().visit_for_statement_left(slot);
         *slot = new;
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Mark the pass as having mutated the AST in place (operand swap, in-place
     /// field flip, collection element removal, etc.) where no slot replacement
     /// happened. Prefer the `replace_*` helpers when the mutation IS a slot
     /// replacement.
+    #[track_caller]
     #[inline]
     pub fn notice_change(&mut self) {
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Mark an expression subtree as about to be dropped (popped from a collection,
@@ -546,26 +572,29 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     /// Use this helper at every site where a subtree is being removed from the AST
     /// without an immediate slot-replacement helper (e.g. inside a `retain_mut`
     /// predicate, before `field = None`, after `vec.pop()`).
+    #[track_caller]
     #[inline]
     pub fn drop_expression(&mut self, expr: &Expression<'a>) {
         self.dropped_subtree_collector().visit_expression(expr);
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Mark a statement subtree as about to be dropped. Same contract as
     /// `drop_expression`.
+    #[track_caller]
     #[inline]
     pub fn drop_statement(&mut self, stmt: &Statement<'a>) {
         self.dropped_subtree_collector().visit_statement(stmt);
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Mark a class element subtree as about to be dropped. Same contract as
     /// `drop_expression`.
+    #[track_caller]
     #[inline]
     pub fn drop_class_element(&mut self, element: &ClassElement<'a>) {
         self.dropped_subtree_collector().visit_class_element(element);
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Mark a variable declarator as about to be dropped. Walks the whole
@@ -573,19 +602,21 @@ impl<'a> TraverseCtx<'a, MinifierState<'a>> {
     /// references, e.g. computed keys in a type literal), and init if still
     /// attached. Same contract as `drop_expression`. If the init is kept
     /// alive elsewhere, `take()` it out of the declarator before calling this.
+    #[track_caller]
     #[inline]
     pub fn drop_variable_declarator(&mut self, decl: &VariableDeclarator<'a>) {
         self.dropped_subtree_collector().visit_variable_declarator(decl);
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 
     /// Mark a switch case subtree as about to be dropped. Walks the entire case —
     /// test expression (if present) and all statements in the consequent. Same contract
     /// as `drop_expression`. Use this helper when removing a case from a switch statement's
     /// case vector to properly notify the scope tracking system about dropped references.
+    #[track_caller]
     #[inline]
     pub fn drop_switch_case(&mut self, switch_case: &SwitchCase<'a>) {
         self.dropped_subtree_collector().visit_switch_case(switch_case);
-        self.state.record_ast_change();
+        self.bg_record_ast_change();
     }
 }

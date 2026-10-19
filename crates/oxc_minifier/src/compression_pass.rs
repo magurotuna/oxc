@@ -290,18 +290,32 @@ pub fn run_peephole_pass<'a>(
 ) -> PassOutcome {
     debug_assert_pass_changes_clean(ctx.get_mut());
     ctx.state_mut().symbols.reset_values();
+    crate::bg_skip::begin_pass(ctx.get_mut());
+    let bg_t0 = crate::bg_stats::enabled().then(std::time::Instant::now);
     traverse_mut_with_ctx(&mut PeepholeOptimizations, program, ctx);
 
     let ctx = ctx.get_mut();
+    let bg_t1 = bg_t0.map(|_| std::time::Instant::now());
+    let bg_removed = if bg_t0.is_some() || ctx.state.bg_skip.is_some() {
+        crate::bg_stats::removed_symbols(ctx)
+    } else {
+        vec![]
+    };
     let revisit_requested = ctx.state.take_revisit_requested();
     let newly_dead = finish_pass(program, ctx, /* force_liveness_analysis */ false);
+    if let (Some(t0), Some(t1)) = (bg_t0, bg_t1) {
+        let finish = t1.elapsed();
+        crate::bg_stats::after_pass(program, ctx, &bg_removed, t1 - t0, finish);
+    }
     debug_assert!(
         !newly_dead || revisit_requested,
         "ordinary liveness progress must follow a recorded pass change"
     );
     debug_assert_pass_changes_clean(ctx);
 
-    PassOutcome { needs_another_pass: revisit_requested || newly_dead }
+    let needs_another_pass =
+        crate::bg_skip::end_pass(ctx, &bg_removed, revisit_requested || newly_dead);
+    PassOutcome { needs_another_pass }
 }
 
 #[inline]

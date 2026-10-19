@@ -130,7 +130,7 @@ impl<'a> Compressor<'a> {
                 if iteration >= max {
                     break;
                 }
-            } else if iteration > 10 {
+            } else if iteration > if crate::bg_skip::enabled() { 30 } else { 10 } {
                 debug_assert!(false, "Ran loop more than 10 times.");
                 break;
             }

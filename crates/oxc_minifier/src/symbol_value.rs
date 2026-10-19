@@ -118,6 +118,32 @@ pub struct SymbolValue<'a> {
 }
 
 impl SymbolValue<'_> {
+    /// perf/bun-gap (PoC): hash of every field, to detect a fact change between passes.
+    pub fn bg_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        match &self.initialized_constant {
+            None => 0u8.hash(&mut h),
+            Some(ConstantValue::Number(n)) => (1u8, n.to_bits()).hash(&mut h),
+            Some(ConstantValue::BigInt(b)) => (2u8, b).hash(&mut h),
+            Some(ConstantValue::String(s)) => (3u8, s.as_ref()).hash(&mut h),
+            Some(ConstantValue::Boolean(b)) => (4u8, b).hash(&mut h),
+            Some(ConstantValue::Undefined) => 5u8.hash(&mut h),
+            Some(ConstantValue::Null) => 6u8.hash(&mut h),
+        }
+        (
+            self.allow_constant_inlining,
+            self.implicit_undefined,
+            self.references.reads,
+            self.references.writes,
+            self.references.member_write_target_reads,
+            self.kind as u8,
+            self.boolean_falsy,
+        )
+            .hash(&mut h);
+        h.finish()
+    }
+
     /// Constants with one read can always be inlined without duplication:
     /// `const value = "a long string"; use(value)` -> `use("a long string")`.
     ///

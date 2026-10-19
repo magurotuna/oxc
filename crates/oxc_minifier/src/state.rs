@@ -112,6 +112,12 @@ pub struct MinifierState<'a> {
     /// Scratch buffer reused by `try_fold_concat` to build template literal
     /// quasis without allocating a fresh `String` per call.
     pub concat_scratch: String,
+
+    /// perf/bun-gap (PoC instrumentation): per-pass statistics, `OXC_BG_PASS_STATS=1`.
+    pub(crate) bg: Option<Box<crate::bg_stats::PassStats>>,
+
+    /// perf/bun-gap (PoC): skip untouched function bodies, `OXC_BG_SKIP_CLEAN=1`.
+    pub(crate) bg_skip: Option<Box<crate::bg_skip::SkipState<'a>>>,
 }
 
 impl<'a> MinifierState<'a> {
@@ -134,6 +140,9 @@ impl<'a> MinifierState<'a> {
             }),
             pass_changes: PassChanges::new(scoping.references_len(), allocator),
             concat_scratch: String::new(),
+            bg: crate::bg_stats::enabled().then(Box::default),
+            bg_skip: (crate::bg_skip::enabled() && matches!(mode, CompressionMode::Full))
+                .then(Box::default),
         }
     }
 

@@ -329,6 +329,7 @@ impl<'a> Traverse<'a> for PeepholeOptimizations {
     }
 
     fn enter_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut TraverseCtx<'a>) {
+        crate::bg_skip::enter_function_body(body, ctx);
         if matches!(ctx.parent(), Ancestor::ArrowFunctionExpressionBody(_)) {
             return;
         }
@@ -349,7 +350,8 @@ impl<'a> Traverse<'a> for PeepholeOptimizations {
         });
     }
 
-    fn exit_function_body(&mut self, _body: &mut FunctionBody<'a>, ctx: &mut TraverseCtx<'a>) {
+    fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut TraverseCtx<'a>) {
+        crate::bg_skip::exit_function_body(body, ctx);
         if !matches!(ctx.parent(), Ancestor::ArrowFunctionExpressionBody(_)) {
             ctx.state.body_frames.pop();
         }

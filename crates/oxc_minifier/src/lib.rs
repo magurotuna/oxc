@@ -46,6 +46,8 @@
 //!
 //! See the [crate documentation](https://github.com/oxc-project/oxc/tree/main/crates/oxc_minifier) for more details.
 
+mod bg_skip;
+mod bg_stats;
 mod compression_pass;
 mod compressor;
 pub(crate) mod generated;
