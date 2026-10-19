@@ -301,6 +301,7 @@ pub fn run_peephole_pass<'a>(
     } else {
         vec![]
     };
+    let bg_direct_eval_dropped = ctx.state.pass_changes.direct_eval_dropped;
     let revisit_requested = ctx.state.take_revisit_requested();
     let newly_dead = finish_pass(program, ctx, /* force_liveness_analysis */ false);
     if let (Some(t0), Some(t1)) = (bg_t0, bg_t1) {
@@ -314,7 +315,7 @@ pub fn run_peephole_pass<'a>(
     debug_assert_pass_changes_clean(ctx);
 
     let needs_another_pass =
-        crate::bg_skip::end_pass(ctx, &bg_removed, revisit_requested || newly_dead);
+        crate::bg_skip::end_pass(ctx, &bg_removed, bg_direct_eval_dropped, revisit_requested || newly_dead);
     PassOutcome { needs_another_pass }
 }
 

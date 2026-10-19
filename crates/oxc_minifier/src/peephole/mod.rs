@@ -329,8 +329,8 @@ impl<'a> Traverse<'a> for PeepholeOptimizations {
     }
 
     fn enter_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut TraverseCtx<'a>) {
-        crate::bg_skip::enter_function_body(body, ctx);
         if matches!(ctx.parent(), Ancestor::ArrowFunctionExpressionBody(_)) {
+            crate::bg_skip::enter_function_body(body, ctx);
             return;
         }
         let initialized_at = if Self::derived_constructor_this_scope(ctx).is_some() {
@@ -348,6 +348,8 @@ impl<'a> Traverse<'a> for PeepholeOptimizations {
             hoisted_var_inlining_unsafe: false,
             this_initialized_at: initialized_at,
         });
+        // After `this_initialized_at` has read the statements.
+        crate::bg_skip::enter_function_body(body, ctx);
     }
 
     fn exit_function_body(&mut self, body: &mut FunctionBody<'a>, ctx: &mut TraverseCtx<'a>) {

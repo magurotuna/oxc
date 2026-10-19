@@ -33,6 +33,12 @@ pub fn enabled() -> bool {
     *F.get_or_init(|| std::env::var_os("OXC_BG_SKIP_CLEAN").is_some_and(|v| v != "0"))
 }
 
+/// `OXC_BG_SKIP_NO_FACT_CONTINUE=1` restores the first PoC's stop rule (for A/B only).
+fn fact_continue() -> bool {
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| !std::env::var_os("OXC_BG_SKIP_NO_FACT_CONTINUE").is_some_and(|v| v != "0"))
+}
+
 fn confirm() -> bool {
     static F: OnceLock<bool> = OnceLock::new();
     *F.get_or_init(|| !std::env::var_os("OXC_BG_SKIP_NO_CONFIRM").is_some_and(|v| v != "0"))
@@ -108,17 +114,22 @@ fn hash_one(value: impl Hash) -> u64 {
 pub fn end_pass(
     ctx: &mut TraverseCtx<'_>,
     removed_symbols: &[SymbolId],
+    direct_eval_dropped: bool,
     needs_another_pass: bool,
 ) -> bool {
     let Some(mut skip) = ctx.state.bg_skip.take() else { return needs_another_pass };
     let was_partial = skip.visit.is_some();
     let next = next_visit_set(ctx, &mut skip, removed_symbols);
     let result = if needs_another_pass {
-        skip.pending = next;
+        // Dropping a direct `eval` clears scope flags program-wide (not keyed by symbol), so
+        // the next pass walks everything.
+        skip.pending = if direct_eval_dropped { None } else { next };
         true
     } else if !was_partial {
         false
-    } else if next.as_ref().is_some_and(|v| v.iter().any(|s| skip.skipped_fns.contains(s))) {
+    } else if fact_continue()
+        && next.as_ref().is_some_and(|v| v.iter().any(|s| skip.skipped_fns.contains(s)))
+    {
         // No AST change, but a fact computed during this pass (e.g. a constant that became
         // inlinable) can unlock a rule in a body this pass skipped; a full pass would have
         // applied it later in the same walk.
