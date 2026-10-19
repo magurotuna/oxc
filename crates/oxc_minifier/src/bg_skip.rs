@@ -47,6 +47,8 @@ pub struct SkipState<'a> {
     /// One entry per entered function body: the statements taken out, if skipped.
     stash: Vec<Option<ArenaVec<'a, Statement<'a>>>>,
     changed_fns: FxHashSet<ScopeId>,
+    /// Outermost function bodies skipped by the current pass.
+    skipped_fns: FxHashSet<ScopeId>,
     /// Per symbol: hash of the facts the last pass that computed them saw.
     value_hash: Vec<u64>,
     fact_hash: Vec<u64>,
@@ -66,6 +68,7 @@ pub fn begin_pass(ctx: &mut TraverseCtx<'_>) {
     let refs_len = ctx.scoping().references_len();
     let Some(skip) = ctx.state.bg_skip.as_mut() else { return };
     skip.visit = skip.pending.take();
+    skip.skipped_fns.clear();
     skip.refs_len_at_start = refs_len;
     skip.passes += 1;
     if skip.visit.is_some() {
@@ -80,6 +83,7 @@ pub fn enter_function_body<'a>(body: &mut FunctionBody<'a>, ctx: &mut TraverseCt
     let Some(skip) = ctx.state.bg_skip.as_mut() else { return };
     if !in_class && skip.visit.as_ref().is_some_and(|v| !v.contains(&scope)) {
         skip.stash.push(Some(std::mem::replace(&mut body.statements, empty)));
+        skip.skipped_fns.insert(scope);
         skip.skipped += 1;
     } else {
         skip.stash.push(None);
@@ -108,17 +112,24 @@ pub fn end_pass(
 ) -> bool {
     let Some(mut skip) = ctx.state.bg_skip.take() else { return needs_another_pass };
     let was_partial = skip.visit.is_some();
-    let result = if !needs_another_pass {
-        if was_partial && confirm() {
-            // A full pass confirms the fixed point.
-            skip.pending = None;
-            true
-        } else {
-            false
-        }
-    } else {
-        skip.pending = next_visit_set(ctx, &mut skip, removed_symbols);
+    let next = next_visit_set(ctx, &mut skip, removed_symbols);
+    let result = if needs_another_pass {
+        skip.pending = next;
         true
+    } else if !was_partial {
+        false
+    } else if next.as_ref().is_some_and(|v| v.iter().any(|s| skip.skipped_fns.contains(s))) {
+        // No AST change, but a fact computed during this pass (e.g. a constant that became
+        // inlinable) can unlock a rule in a body this pass skipped; a full pass would have
+        // applied it later in the same walk.
+        skip.pending = next;
+        true
+    } else if confirm() {
+        // A full pass confirms the fixed point.
+        skip.pending = None;
+        true
+    } else {
+        false
     };
     skip.changed_fns.clear();
     ctx.state.bg_skip = Some(skip);
