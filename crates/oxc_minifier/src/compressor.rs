@@ -121,6 +121,8 @@ impl<'a> Compressor<'a> {
         // visible to pass 1. Ignore the result because pass 1 runs
         // unconditionally and consumes any newly dead functions.
         compression_pass::finish_normalize_pass(program, ctx.get_mut());
+        // perf/bun-gap (PoC): partial passes count as iterations, so allow more of them.
+        let cap = if ctx.get_mut().state.bg_skip.is_some() { 30 } else { 10 };
         loop {
             let outcome = compression_pass::run_peephole_pass(program, ctx);
             if !outcome.needs_another_pass {
@@ -130,7 +132,7 @@ impl<'a> Compressor<'a> {
                 if iteration >= max {
                     break;
                 }
-            } else if iteration > if crate::bg_skip::enabled() { 30 } else { 10 } {
+            } else if iteration > cap {
                 debug_assert!(false, "Ran loop more than 10 times.");
                 break;
             }
