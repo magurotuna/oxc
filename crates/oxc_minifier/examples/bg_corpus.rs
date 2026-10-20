@@ -37,10 +37,16 @@ fn main() {
             let ret = Minifier::new(MinifierOptions {
                 mangle: None,
                 mangle_properties: None,
-                compress: Some(if std::env::var_os("BG_CORPUS_SMALLEST").is_some() {
-                    CompressOptions::smallest()
-                } else {
-                    CompressOptions::default()
+                compress: Some(CompressOptions {
+                    // `BG_CORPUS_MAX_ITER=n` caps the compressor at n+1 passes.
+                    max_iterations: std::env::var("BG_CORPUS_MAX_ITER")
+                        .ok()
+                        .and_then(|v| v.parse().ok()),
+                    ..if std::env::var_os("BG_CORPUS_SMALLEST").is_some() {
+                        CompressOptions::smallest()
+                    } else {
+                        CompressOptions::default()
+                    }
                 }),
             })
             .minify(&allocator, &mut program);
