@@ -114,6 +114,10 @@ impl<'a> SourcemapBuilder<'a> {
     }
 
     pub fn add_source_mapping_for_name(&mut self, output: &[u8], span: Span, name: &str) {
+        if bg_no_names() {
+            self.add_source_mapping(output, span.start, None);
+            return;
+        }
         let original_name = self.original_name(span, name);
         // The token name should be original name.
         // If it hasn't changed, name should be `None` to reduce `SourceMap` size.
@@ -125,6 +129,10 @@ impl<'a> SourcemapBuilder<'a> {
     ///
     /// The token is `#name`, so that is what the mapping is compared against and what it records.
     pub fn add_source_mapping_for_private_name(&mut self, output: &[u8], span: Span, name: &str) {
+        if bg_no_names() {
+            self.add_source_mapping(output, span.start, None);
+            return;
+        }
         let original_name = self.original_name(span, name);
         let unchanged = original_name.is_some_and(|original| {
             original
@@ -788,4 +796,10 @@ mod test {
             assert_eq!((line, col), (expected_line, expected_col), "Mismatch at position {pos}");
         }
     }
+}
+
+/// perf/bun-gap E1 (PoC, `OXC_BG_NO_NAMES=1`): record no sourcemap `names` (Bun emits none).
+fn bg_no_names() -> bool {
+    static NO_NAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *NO_NAMES.get_or_init(|| std::env::var_os("OXC_BG_NO_NAMES").is_some())
 }
