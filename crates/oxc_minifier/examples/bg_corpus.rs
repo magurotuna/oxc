@@ -14,7 +14,7 @@ use std::{
 
 use oxc_allocator::Allocator;
 use oxc_codegen::{Codegen, CodegenOptions};
-use oxc_minifier::{CompressOptions, Minifier, MinifierOptions};
+use oxc_minifier::{CompressOptions, MangleOptions, Minifier, MinifierOptions};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
 use rustc_hash::FxHasher;
@@ -35,9 +35,10 @@ fn main() {
             }
             let mut program = ret.program;
             let ret = Minifier::new(MinifierOptions {
-                mangle: None,
+                // `BG_CORPUS_MANGLE=1` also mangles; `BG_CORPUS_NO_COMPRESS=1` skips the compressor.
+                mangle: std::env::var_os("BG_CORPUS_MANGLE").map(|_| MangleOptions::default()),
                 mangle_properties: None,
-                compress: Some(CompressOptions {
+                compress: std::env::var_os("BG_CORPUS_NO_COMPRESS").is_none().then(|| CompressOptions {
                     // `BG_CORPUS_MAX_ITER=n` caps the compressor at n+1 passes.
                     max_iterations: std::env::var("BG_CORPUS_MAX_ITER")
                         .ok()
