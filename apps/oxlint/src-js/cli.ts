@@ -83,7 +83,8 @@ function loadLanguagePluginWrapper(
  * @param filePath - Absolute path of file being linted
  * @param pluginId - ID of the language plugin
  * @param pluginOptionsJSON - Options of the `languagePlugins` entry, as JSON
- * @param sourceText - Source text of the file
+ * @param sourceText - Source text of the file, without a BOM
+ * @param hasBOM - `true` if the file starts with a BOM
  * @param ruleIds - IDs of rules to run on this file
  * @param optionsIds - IDs of options to use for rules on this file, in same order as `ruleIds`
  * @param settingsJSON - Settings for file, as JSON
@@ -97,6 +98,7 @@ function lintLanguageFileWrapper(
   pluginId: number,
   pluginOptionsJSON: string,
   sourceText: string,
+  hasBOM: boolean,
   ruleIds: number[],
   optionsIds: number[],
   settingsJSON: string,
@@ -113,6 +115,7 @@ function lintLanguageFileWrapper(
     pluginId,
     pluginOptionsJSON,
     sourceText,
+    hasBOM,
     ruleIds,
     optionsIds,
     settingsJSON,

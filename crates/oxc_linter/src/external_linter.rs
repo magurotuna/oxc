@@ -93,6 +93,8 @@ pub struct LintLanguageFileArgs {
     pub plugin_options_json: Arc<str>,
     /// Source text of the whole file, without a BOM.
     pub source_text: String,
+    /// Whether the file starts with a BOM.
+    pub has_bom: bool,
     /// Rule IDs of the JS plugin rules to run.
     pub rule_ids: Vec<u32>,
     /// Options IDs, in the same order as `rule_ids`.

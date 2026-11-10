@@ -54,6 +54,8 @@ interface LanguageFileState {
   // Set of comments, to tell comments from tokens. Created on first use.
   commentSet: Set<TokenOrComment> | null;
   parserOptions: Readonly<Record<string, unknown>>;
+  // `true` if the file starts with a BOM. The source text that rules see has no BOM.
+  hasBOM: boolean;
 }
 
 export let languageFile: LanguageFileState | null = null;
@@ -64,11 +66,13 @@ export let languageFile: LanguageFileState | null = null;
  * @param loaded - Result of the plugin's `load` function
  * @param keys - Child field names of the syntax tree, keyed by node type
  * @param parserOptions - Options of the `languagePlugins` entry
+ * @param hasBOM - `true` if the file starts with a BOM
  */
 export function setupLanguageFile(
   loaded: LoadedLanguageFile,
   keys: Record<string, readonly string[]>,
   parserOptions: Readonly<Record<string, unknown>>,
+  hasBOM: boolean,
 ): void {
   const { ast } = loaded;
   const tokens = Array.isArray(loaded.tokens)
@@ -85,6 +89,7 @@ export function setupLanguageFile(
     tokensAndComments: null,
     commentSet: null,
     parserOptions,
+    hasBOM,
   };
 }
 
@@ -191,6 +196,7 @@ interface NormalizedOptions {
   includeComments: boolean;
   filter: FilterFn | null;
   skip: number;
+  // Maximum number of tokens, or -1 for no limit. As in ESLint, a given `count` of 0 returns no tokens.
   count: number;
 }
 
@@ -203,17 +209,17 @@ function normalizeOptions(options: TokenOptions, isMulti: boolean): NormalizedOp
   if (typeof options === "number") {
     return isMulti
       ? { includeComments: false, filter: null, skip: 0, count: options }
-      : { includeComments: false, filter: null, skip: options, count: 0 };
+      : { includeComments: false, filter: null, skip: options, count: -1 };
   }
   if (typeof options === "function") {
-    return { includeComments: false, filter: options, skip: 0, count: 0 };
+    return { includeComments: false, filter: options, skip: 0, count: -1 };
   }
-  if (options == null) return { includeComments: false, filter: null, skip: 0, count: 0 };
+  if (options == null) return { includeComments: false, filter: null, skip: 0, count: -1 };
   return {
     includeComments: options.includeComments === true,
     filter: typeof options.filter === "function" ? options.filter : null,
     skip: typeof options.skip === "number" ? options.skip : 0,
-    count: typeof options.count === "number" ? options.count : 0,
+    count: typeof options.count === "number" ? options.count : -1,
   };
 }
 
@@ -223,7 +229,7 @@ function itemsFor(options: NormalizedOptions): TokenOrComment[] {
 
 /**
  * Collect tokens from `startIndex` in direction `step`, while `isInside` holds.
- * Applies `filter` and `skip`. Stops after `limit` tokens (0 = no limit).
+ * Applies `filter` and `skip`. Stops after `limit` tokens (-1 = no limit).
  */
 function collect(
   items: TokenOrComment[],
@@ -234,6 +240,7 @@ function collect(
   limit: number,
 ): TokenOrComment[] {
   const result: TokenOrComment[] = [];
+  if (limit === 0) return result;
   let toSkip = options.skip;
   for (let i = startIndex; i >= 0 && i < items.length; i += step) {
     const item = items[i];
@@ -244,7 +251,7 @@ function collect(
       continue;
     }
     result.push(item);
-    if (limit !== 0 && result.length === limit) break;
+    if (limit > 0 && result.length === limit) break;
   }
   return result;
 }
@@ -610,20 +617,56 @@ interface VariableLike {
   eslintUsed?: boolean;
 }
 
-function markVariableAsUsed(name: string, refNode: LanguageNode): boolean {
+interface ScopeLike {
+  type: string;
+  block: unknown;
+  variables: VariableLike[];
+  childScopes: ScopeLike[];
+  upper: ScopeLike | null;
+}
+
+function markVariableAsUsed(name: string, refNode?: LanguageNode): boolean {
+  // Same as ESLint's `SourceCode#markVariableAsUsed`
   const scopeManager = getScopeManager();
   if (scopeManager === null) return false;
-  // Find the variable in the scope of `refNode`, or in one of its upper scopes
-  let scope = getScope(refNode) as { variables: VariableLike[]; upper: unknown } | null;
+  const { ast } = getState().loaded;
+  let scope: ScopeLike | null = getScope(refNode ?? ast) as ScopeLike;
+  // In a module or a CommonJS file, top-level variables are in the child scope of the global scope
+  // whose block is the `Program` node
+  if (
+    scope.type === "global"
+    && scope.childScopes.length !== 0
+    && scope.childScopes[0].block === ast
+  ) {
+    scope = scope.childScopes[0];
+  }
   while (scope) {
     const variable = scope.variables.find((v) => v.name === name);
     if (variable) {
       variable.eslintUsed = true;
       return true;
     }
-    scope = scope.upper as typeof scope;
+    scope = scope.upper;
   }
   return false;
+}
+
+interface GlobalVariableLike {
+  defs: unknown[];
+  references: { identifier: unknown }[];
+}
+
+function isGlobalReference(node: LanguageNode): boolean {
+  // Same as ESLint's `SourceCode#isGlobalReference`
+  if (!node) throw new TypeError("Missing required argument: `node`");
+  if (node.type !== "Identifier") return false;
+  const scopeManager = getScopeManager() as {
+    scopes: { set: Map<string, GlobalVariableLike> }[];
+  } | null;
+  if (scopeManager === null || scopeManager.scopes.length === 0) return false;
+  const variable = scopeManager.scopes[0].set.get(node.name as string);
+  if (variable === undefined || variable.defs.length > 0) return false;
+  return variable.references.some(({ identifier }) => identifier === node);
 }
 
 // `SourceCode` object for files that a language plugin parsed.
@@ -632,7 +675,9 @@ export const LANGUAGE_SOURCE_CODE = Object.freeze({
   get text(): string {
     return getText();
   },
-  hasBOM: false,
+  get hasBOM(): boolean {
+    return getState().hasBOM;
+  },
   get ast(): LanguageNode {
     return getState().loaded.ast;
   },
@@ -703,6 +748,7 @@ export const LANGUAGE_SOURCE_CODE = Object.freeze({
   getScope,
   getDeclaredVariables,
   markVariableAsUsed,
+  isGlobalReference,
   getTokens,
   getFirstToken,
   getFirstTokens,

@@ -19,7 +19,8 @@ import { allOptions, DEFAULT_OPTIONS_ID } from "./options.ts";
 import { diagnostics } from "./report.ts";
 import { setSettingsForFile } from "./settings.ts";
 import { setupSourceTextForLanguageFile } from "./source_code.ts";
-import { setGlobalsForFile } from "./globals.ts";
+import { envs, globals, initGlobals, setGlobalsForFile } from "./globals.ts";
+import { ENVS } from "../generated/envs.ts";
 import { timeCall, wrapTimedFunction } from "./timing.ts";
 import { switchWorkspace } from "./workspace.ts";
 import baseVisitorKeys from "../generated/keys.ts";
@@ -237,6 +238,7 @@ export function lintLanguageFile(
   pluginId: number,
   pluginOptionsJSON: string,
   sourceText: string,
+  hasBOM: boolean,
   ruleIds: number[],
   optionsIds: number[],
   settingsJSON: string,
@@ -253,6 +255,7 @@ export function lintLanguageFile(
       pluginId,
       pluginOptionsJSON,
       sourceText,
+      hasBOM,
       ruleIds,
       optionsIds,
       settingsJSON,
@@ -297,6 +300,7 @@ function lintLanguageFileImpl(
   pluginId: number,
   pluginOptionsJSON: string,
   sourceText: string,
+  hasBOM: boolean,
   ruleIds: number[],
   optionsIds: number[],
   settingsJSON: string,
@@ -334,11 +338,13 @@ function lintLanguageFileImpl(
   // Rules see the file's own text and syntax tree
   setupFileContext(filePath);
   setupSourceTextForLanguageFile(sourceText);
-  setupLanguageFile(loaded, keys, Object.freeze(options));
+  setupLanguageFile(loaded, keys, Object.freeze(options), hasBOM);
   setSettingsForFile(settingsJSON);
   setGlobalsForFile(globalsJSON);
 
   if (ruleIds.length === 0) return { markupReferences, markupComments };
+
+  if (loaded.scopeManager != null) addConfiguredGlobals(loaded.scopeManager);
 
   debugAssertIsNonNull(allOptions, "`allOptions` should be initialized");
 
@@ -540,4 +546,53 @@ function isRangedNode(value: unknown): value is LanguageNode {
     && typeof (value as { type?: unknown }).type === "string"
     && isRange((value as { range?: unknown }).range)
   );
+}
+
+interface GlobalsScopeManager {
+  addGlobals?: (names: string[]) => void;
+  scopes: { set: Map<string, Record<string, unknown>> }[];
+}
+
+/**
+ * Add the configured globals and the globals of the configured environments to the scope manager
+ * of a language plugin, as ESLint does (`scopeManager.addGlobals`), so that references to them resolve.
+ *
+ * Does nothing if the scope manager has no `addGlobals` method. ESLint 10 requires the method.
+ */
+function addConfiguredGlobals(scopeManager: unknown): void {
+  const manager = scopeManager as GlobalsScopeManager;
+  if (typeof manager.addGlobals !== "function" || manager.scopes.length === 0) return;
+
+  if (globals === null) initGlobals();
+  debugAssertIsNonNull(globals);
+  debugAssertIsNonNull(envs);
+
+  // Name -> `true` if writable
+  const writable = new Map<string, boolean>();
+  for (const envName in envs) {
+    const preset = ENVS.get(envName);
+    if (preset === undefined) continue;
+    // Globals in `globals` win over envs. They might be `"off"`.
+    for (const name of preset.readonly) {
+      if (!Object.hasOwn(globals, name)) writable.set(name, false);
+    }
+    for (const name of preset.writable) {
+      if (!Object.hasOwn(globals, name)) writable.set(name, true);
+    }
+  }
+  for (const name in globals) {
+    const value = globals[name];
+    if (value !== "off") writable.set(name, value === "writable");
+  }
+  if (writable.size === 0) return;
+
+  manager.addGlobals([...writable.keys()]);
+  const globalScope = manager.scopes[0];
+  for (const [name, isWritable] of writable) {
+    const variable = globalScope.set.get(name);
+    if (variable === undefined) continue;
+    variable.writeable = isWritable;
+    variable.eslintImplicitGlobalSetting = isWritable ? "writable" : "readonly";
+    variable.eslintExplicitGlobal = false;
+  }
 }

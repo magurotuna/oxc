@@ -114,6 +114,7 @@ fn wrap_lint_language_file(cb: JsLintLanguageFileCb) -> ExternalLinterLintLangua
                 args.plugin_id,
                 args.plugin_options_json.to_string(),
                 args.source_text,
+                args.has_bom,
                 args.rule_ids,
                 args.options_ids,
                 args.settings_json,

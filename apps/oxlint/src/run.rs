@@ -103,7 +103,8 @@ pub type JsLintLanguageFileCb = ThreadsafeFunction<
         String,         // Absolute path of file to lint
         u32,            // Language plugin ID
         String,         // Options of the language plugin entry, as JSON string
-        String,         // Source text of the file
+        String,         // Source text of the file, without a BOM
+        bool,           // Whether the file starts with a BOM
         Vec<u32>,       // Array of rule IDs
         Vec<u32>,       // Array of options IDs
         String,         // Settings for the file, as JSON string
@@ -114,7 +115,19 @@ pub type JsLintLanguageFileCb = ThreadsafeFunction<
     // Return value
     String, // Success or failure payload serialized to JSON
     // Arguments (repeated)
-    FnArgs<(String, u32, String, String, Vec<u32>, Vec<u32>, String, String, bool, Option<String>)>,
+    FnArgs<(
+        String,
+        u32,
+        String,
+        String,
+        bool,
+        Vec<u32>,
+        Vec<u32>,
+        String,
+        String,
+        bool,
+        Option<String>,
+    )>,
     // Error status
     Status,
     // CalleeHandled

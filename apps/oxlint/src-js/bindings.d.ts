@@ -71,7 +71,7 @@ export type JsDestroyWorkspaceCb = ((arg: string) => void)
 export type JsLintFileCb = ((arg0: string, arg1: number, arg2: Uint8Array | undefined | null, arg3: Array<number>, arg4: Array<number>, arg5: string, arg6: string, arg7: boolean, arg8?: string | undefined | null) => string | null)
 
 /** JS callback to lint a file with a language plugin. */
-export type JsLintLanguageFileCb = ((arg0: string, arg1: number, arg2: string, arg3: string, arg4: Array<number>, arg5: Array<number>, arg6: string, arg7: string, arg8: boolean, arg9?: string | undefined | null) => string)
+export type JsLintLanguageFileCb = ((arg0: string, arg1: number, arg2: string, arg3: string, arg4: boolean, arg5: Array<number>, arg6: Array<number>, arg7: string, arg8: string, arg9: boolean, arg10?: string | undefined | null) => string)
 
 /** JS callback to load JavaScript config files. */
 export type JsLoadJsConfigsCb = ((arg: Array<string>) => Promise<string>)

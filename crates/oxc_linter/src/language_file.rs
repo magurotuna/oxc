@@ -162,6 +162,7 @@ impl Linter {
             plugin_id: binding.plugin_id.raw(),
             plugin_options_json: Arc::clone(&binding.options_json),
             source_text: js_source_text.to_string(),
+            has_bom,
             rule_ids: external_rules.iter().map(|(rule_id, _, _)| rule_id.raw()).collect(),
             options_ids: external_rules.iter().map(|(_, options_id, _)| options_id.raw()).collect(),
             settings_json,
