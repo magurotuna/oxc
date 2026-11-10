@@ -11,7 +11,7 @@ use oxc_span::{SourceType, Span};
 
 use crate::{
     AllowWarnDeny, DisableDirectives, FixKind, Fixer, LintService, LintServiceOptions, Linter,
-    Message, OsFileSystem, RuleTimingStore, RuntimeFileSystem, TsGoLintState,
+    Message, OsFileSystem, RuleTimingStore, RuntimeFileSystem, TsGoLintState, TypeAwareNotice,
     create_unused_directives_messages, suppression::DiffManager,
 };
 
@@ -31,6 +31,8 @@ pub struct LintRunner {
     /// The regular pass writes fixed files, so type-aware linting must wait until it is done to
     /// read them.
     regular_pass_writes_files: bool,
+    /// Notices from the type-aware backend, collected by [`LintRunner::lint_files`].
+    notices: Vec<TypeAwareNotice>,
 }
 
 /// Manages disable directives across all linting engines.
@@ -195,6 +197,7 @@ pub struct LintRunnerBuilder {
     type_check_only: bool,
     timings: bool,
     with_ignore_fixes: bool,
+    run_external_code: bool,
 }
 
 impl LintRunnerBuilder {
@@ -209,6 +212,7 @@ impl LintRunnerBuilder {
             type_check_only: false,
             timings: false,
             with_ignore_fixes: false,
+            run_external_code: false,
         }
     }
 
@@ -254,6 +258,14 @@ impl LintRunnerBuilder {
         self
     }
 
+    /// Let the type-aware backend run the content mappers in `tsconfig.json` files.
+    /// See [`TsGoLintState::with_run_external_code`].
+    #[must_use]
+    pub fn with_run_external_code(mut self, run_external_code: bool) -> Self {
+        self.run_external_code = run_external_code;
+        self
+    }
+
     /// # Errors
     /// Returns an error if the type-aware linter fails to initialize.
     pub fn build(self) -> Result<LintRunner, String> {
@@ -271,7 +283,8 @@ impl LintRunnerBuilder {
                         .with_type_check(self.type_check)
                         .with_type_check_only(self.type_check_only)
                         .with_timings(self.timings)
-                        .with_ignore_fixes(self.with_ignore_fixes),
+                        .with_ignore_fixes(self.with_ignore_fixes)
+                        .with_run_external_code(self.run_external_code),
                 ),
                 Err(e) => return Err(e),
             }
@@ -292,6 +305,7 @@ impl LintRunnerBuilder {
             fix_kind: self.fix_kind,
             type_check_only: self.type_check_only,
             regular_pass_writes_files,
+            notices: vec![],
         })
     }
 }
@@ -336,7 +350,7 @@ impl LintRunner {
         let type_aware_run = type_aware_run
             .or_else(|| self.type_aware_linter.take().map(|linter| linter.start(files)));
         if let Some(type_aware_run) = type_aware_run {
-            type_aware_run.finish(
+            self.notices = type_aware_run.finish(
                 self.directives_store.map(),
                 tx_error,
                 fs,
@@ -378,6 +392,12 @@ impl LintRunner {
         if let Some(severity) = severity {
             self.directives_store.report_unused(severity, self.fix_kind, &self.cwd, tx_error);
         }
+    }
+
+    /// Notices from the type-aware backend, without duplicates, sorted.
+    /// They are shown separately from diagnostics, and do not change the exit code.
+    pub fn notices(&self) -> &[TypeAwareNotice] {
+        &self.notices
     }
 
     /// Get the directives coordinator for external use

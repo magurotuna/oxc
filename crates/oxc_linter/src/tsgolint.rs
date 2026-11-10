@@ -22,8 +22,14 @@ use super::{AllowWarnDeny, ConfigStore, DisableDirectives, ResolvedLinterState, 
 
 use crate::{
     CompositeFix, FixKind, Fixer, Message, PossibleFixes, RuleTimingRecord, RuleTimingSource,
-    RuleTimingStore, WEBSITE_BASE_RULES_URL, suppression::DiffManager,
+    RuleTimingStore, WEBSITE_BASE_RULES_URL, loader::LINT_PARTIAL_LOADER_EXTENSIONS,
+    suppression::DiffManager,
 };
+
+/// The environment variable that lets `tsrs-lint` run the content mappers in `tsconfig.json`
+/// files. It has the same effect as the `--runExternalCode` flag of `tsrs-lint`. Other backends
+/// ignore it.
+const RUN_EXTERNAL_CODE_ENV: &str = "TSRS_LINT_RUN_EXTERNAL_CODE";
 
 /// State required to initialize the `tsgolint` linter.
 #[derive(Debug, Clone)]
@@ -49,6 +55,9 @@ pub struct TsGoLintState {
     timings: bool,
     /// If `true`, the linter will create "ignore this section / line" fixes for all diagnostics
     with_ignore_fixes: bool,
+    /// If `true`, let the backend run the content mappers in `tsconfig.json` files, and send
+    /// `.vue`, `.svelte`, and `.astro` files to the backend.
+    run_external_code: bool,
 }
 
 impl TsGoLintState {
@@ -67,6 +76,7 @@ impl TsGoLintState {
             type_check_only: false,
             timings: false,
             with_ignore_fixes: false,
+            run_external_code: false,
         }
     }
 
@@ -92,6 +102,7 @@ impl TsGoLintState {
             type_check_only: false,
             timings: false,
             with_ignore_fixes: false,
+            run_external_code: false,
         })
     }
 
@@ -138,6 +149,25 @@ impl TsGoLintState {
         self
     }
 
+    /// Set to `true` to let the backend run the content mappers that `tsconfig.json` files list
+    /// in `contentMappers`. Then `.vue`, `.svelte`, and `.astro` files are also sent to the
+    /// backend.
+    ///
+    /// Content mappers are programs from dependencies, so only the user can enable this.
+    ///
+    /// Default is `false`.
+    #[must_use]
+    pub fn with_run_external_code(mut self, yes: bool) -> Self {
+        self.run_external_code = yes;
+        self
+    }
+
+    /// Returns `true` if `path` is sent to the backend.
+    fn is_backend_file(&self, path: &Path) -> bool {
+        SourceType::from_path(path).is_ok()
+            || (self.run_external_code && is_content_mapped_file(path))
+    }
+
     /// Runs `tsgolint` on `paths` to completion. Equivalent to [`Self::start`] followed by
     /// [`TsGoLintRun::finish`].
     ///
@@ -156,7 +186,7 @@ impl TsGoLintState {
         file_system: &(dyn crate::RuntimeFileSystem + Sync + Send),
         diff_manager: &Arc<DiffManager>,
         rule_timing_store: Option<&RuleTimingStore>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<TypeAwareNotice>, String> {
         self.start(paths).finish(
             disable_directives_map,
             error_sender,
@@ -183,7 +213,7 @@ impl TsGoLintState {
 
         let mut resolved_configs: FxHashMap<PathBuf, ResolvedLinterState> = FxHashMap::default();
 
-        let json_input = self.json_input(paths, None, &mut resolved_configs);
+        let json_input = self.json_input(paths, None, true, &mut resolved_configs);
         if json_input.configs.is_empty() {
             return TsGoLintRun { started: None };
         }
@@ -191,7 +221,7 @@ impl TsGoLintState {
         let all_paths = {
             let mut paths_buff = vec![];
             for path in paths {
-                if SourceType::from_path(Path::new(path)).is_ok() {
+                if self.is_backend_file(Path::new(path)) {
                     let path_buf = PathBuf::from(path);
                     paths_buff.push(path_buf.clone());
                 }
@@ -208,7 +238,9 @@ impl TsGoLintState {
                 for msg in TsGoLintMessageStream::new(stdout) {
                     let is_error = !matches!(
                         msg,
-                        Ok(TsGoLintMessage::Diagnostic(_) | TsGoLintMessage::Timing(_))
+                        Ok(TsGoLintMessage::Diagnostic(_)
+                            | TsGoLintMessage::Timing(_)
+                            | TsGoLintMessage::Notice(_))
                     );
                     if sender.send(msg).is_err() || is_error {
                         break;
@@ -254,6 +286,8 @@ impl TsGoLintRun {
     ///
     /// # Errors
     /// A human-readable error message indicating why the linting failed.
+    ///
+    /// Returns the notices that the backend sent, without duplicates, sorted.
     pub fn finish(
         mut self,
         disable_directives_map: Arc<Mutex<FxHashMap<PathBuf, DisableDirectives>>>,
@@ -261,10 +295,10 @@ impl TsGoLintRun {
         file_system: &(dyn crate::RuntimeFileSystem + Sync + Send),
         diff_manager: &Arc<DiffManager>,
         rule_timing_store: Option<&RuleTimingStore>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<TypeAwareNotice>, String> {
         let Some(StartedRun { state, resolved_configs, all_paths, process }) = self.started.take()
         else {
-            return Ok(());
+            return Ok(vec![]);
         };
 
         let should_fix = state.fix || state.fix_suggestions;
@@ -288,6 +322,7 @@ impl TsGoLintRun {
                     error_sender,
                 );
                 let mut timings = vec![];
+                let mut notices = BTreeSet::new();
 
                 for msg in messages {
                     match msg {
@@ -296,7 +331,8 @@ impl TsGoLintRun {
                         }
                         Ok(TsGoLintMessage::Diagnostic(tsgolint_diagnostic)) => {
                             match tsgolint_diagnostic {
-                                TsGoLintDiagnostic::Rule(tsgolint_diagnostic) => {
+                                TsGoLintDiagnostic::Rule(mut tsgolint_diagnostic) => {
+                                    drop_fixes_in_content_mapped_file(&mut tsgolint_diagnostic);
                                     let path = &tsgolint_diagnostic.file_path;
 
                                     let severity = resolved_configs
@@ -347,6 +383,11 @@ impl TsGoLintRun {
                         Ok(TsGoLintMessage::Timing(payload)) => {
                             timings.extend(payload.rules);
                         }
+                        Ok(TsGoLintMessage::Notice(notice)) => {
+                            if let Some(notice) = TypeAwareNotice::from_payload(notice) {
+                                notices.insert(notice);
+                            }
+                        }
                         Err(e) => {
                             return Err(e);
                         }
@@ -363,6 +404,7 @@ impl TsGoLintRun {
                     messages_requiring_fixes: diagnostic_handler
                         .into_messages_requiring_fixes(&diff_manager_clone_to_ts_go, all_paths),
                     timings,
+                    notices: notices.into_iter().collect(),
                 })
             });
 
@@ -389,7 +431,7 @@ impl TsGoLintRun {
 
         match handler.join() {
             Ok(Ok(output)) => {
-                let TsGoLintOutput { messages_requiring_fixes, timings } = output;
+                let TsGoLintOutput { messages_requiring_fixes, timings, notices } = output;
                 if let Some(rule_timing_store) = rule_timing_store {
                     rule_timing_store.merge(timings.into_iter().map(|timing| RuleTimingRecord {
                         source: RuleTimingSource::TypeAware,
@@ -449,7 +491,7 @@ impl TsGoLintRun {
                         sender_for_fixes.send(diagnostics).expect("Failed to send diagnostics");
                     }
                 }
-                Ok(())
+                Ok(notices)
             }
             Ok(Err(err)) => Err(format!("Error running tsgolint: {err:?}")),
             Err(err) => Err(format!("Error running tsgolint: {err:?}")),
@@ -487,6 +529,14 @@ impl TsGoLintState {
 
         if self.fix_suggestions {
             cmd.arg("-fix-suggestions");
+        }
+
+        // Only `--run-external-code` decides if the backend runs content mappers, so do not pass
+        // this variable from the environment of Oxlint.
+        if self.run_external_code {
+            cmd.env(RUN_EXTERNAL_CODE_ENV, "1");
+        } else {
+            cmd.env_remove(RUN_EXTERNAL_CODE_ENV);
         }
 
         if let Ok(trace_file) = std::env::var("OXLINT_TSGOLINT_TRACE") {
@@ -559,7 +609,7 @@ impl TsGoLintState {
         }
 
         let json_input =
-            self.json_input(paths, Some(source_overrides.clone()), &mut resolved_configs);
+            self.json_input(paths, Some(source_overrides.clone()), false, &mut resolved_configs);
 
         //  Get the file name of the first path for internal diagnostic filtering
         let path_file_name =
@@ -578,7 +628,8 @@ impl TsGoLintState {
                     }
                     Ok(TsGoLintMessage::Diagnostic(tsgolint_diagnostic)) => {
                         match tsgolint_diagnostic {
-                            TsGoLintDiagnostic::Rule(tsgolint_diagnostic) => {
+                            TsGoLintDiagnostic::Rule(mut tsgolint_diagnostic) => {
+                                drop_fixes_in_content_mapped_file(&mut tsgolint_diagnostic);
                                 let path = tsgolint_diagnostic.file_path.clone();
                                 let Some(resolved_config) = resolved_configs.get(&path) else {
                                     // If we don't have a resolved config for this path, skip it. We should always
@@ -625,7 +676,9 @@ impl TsGoLintState {
                                     &source_text_owned,
                                 );
 
-                                if self.with_ignore_fixes {
+                                // In Phase 1, a fix in a content-mapped file can include code
+                                // that the mapper generated, so these files get no fixes.
+                                if self.with_ignore_fixes && !is_content_mapped_file(&path) {
                                     message.add_ignore_fix(0, &source_text_owned);
                                 }
 
@@ -653,7 +706,7 @@ impl TsGoLintState {
                             }
                         }
                     }
-                    Ok(TsGoLintMessage::Timing(_)) => {}
+                    Ok(TsGoLintMessage::Timing(_) | TsGoLintMessage::Notice(_)) => {}
                     Err(e) => {
                         return Err(e);
                     }
@@ -681,17 +734,21 @@ impl TsGoLintState {
     ///   ]
     /// }
     /// ```
+    ///
+    /// If `report_notices` is `true`, the backend can send notices, such as a notice that a
+    /// `tsconfig.json` file lists content mappers, but they did not run.
     #[inline]
     fn json_input(
         &self,
         paths: &[Arc<OsStr>],
         source_overrides: Option<FxHashMap<String, String>>,
+        report_notices: bool,
         resolved_configs: &mut FxHashMap<PathBuf, ResolvedLinterState>,
     ) -> Payload {
         if self.type_check_only {
             let file_paths: Vec<String> = paths
                 .iter()
-                .filter(|path| SourceType::from_path(Path::new(path)).is_ok())
+                .filter(|path| self.is_backend_file(Path::new(path)))
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect();
             return Payload {
@@ -704,24 +761,29 @@ impl TsGoLintState {
                 source_overrides,
                 report_syntactic: self.type_check,
                 report_semantic: self.type_check,
+                report_notices,
             };
         }
 
         let mut config_groups: FxHashMap<BTreeSet<Rule>, Vec<String>> = FxHashMap::default();
 
         for path in paths {
-            if SourceType::from_path(Path::new(path)).is_ok() {
+            if self.is_backend_file(Path::new(path)) {
                 let file_path = path.to_string_lossy().to_string();
                 let path_buf = PathBuf::from(path);
                 let resolved_config = resolved_configs
                     .entry(path_buf.clone())
                     .or_insert_with(|| self.config_store.resolve(&path_buf));
 
+                let disabled_rules = disabled_rules_in_content_mapped_file(&path_buf);
                 let rules: BTreeSet<Rule> = resolved_config
                     .rules
                     .iter()
                     .filter_map(|(rule, status)| {
-                        if status.is_warn_deny() && rule.is_tsgolint_rule() {
+                        if status.is_warn_deny()
+                            && rule.is_tsgolint_rule()
+                            && !disabled_rules.contains(&rule.name())
+                        {
                             let rule_name = rule.name().to_string();
                             let options = match rule.to_configuration() {
                                 Some(Ok(config)) => Some(config),
@@ -750,7 +812,40 @@ impl TsGoLintState {
             source_overrides,
             report_syntactic: self.type_check,
             report_semantic: self.type_check,
+            report_notices,
         }
+    }
+}
+
+/// Returns `true` if `path` is a file that a content mapper can turn into TypeScript: a `.vue`,
+/// `.svelte`, or `.astro` file. The check uses only the extension.
+pub fn is_content_mapped_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| LINT_PARTIAL_LOADER_EXTENSIONS.contains(&ext))
+}
+
+/// Type-aware rules that give too many false or missed reports on the TypeScript that content
+/// mappers generate for each framework. Oxlint does not run them on these files.
+fn disabled_rules_in_content_mapped_file(path: &Path) -> &'static [&'static str] {
+    match path.extension().and_then(OsStr::to_str) {
+        Some("vue") => DISABLED_RULES_IN_VUE_FILES,
+        Some("svelte") => DISABLED_RULES_IN_SVELTE_FILES,
+        Some("astro") => DISABLED_RULES_IN_ASTRO_FILES,
+        _ => &[],
+    }
+}
+
+const DISABLED_RULES_IN_VUE_FILES: &[&str] = &[];
+const DISABLED_RULES_IN_SVELTE_FILES: &[&str] = &[];
+const DISABLED_RULES_IN_ASTRO_FILES: &[&str] = &[];
+
+/// In Phase 1, Oxlint does not apply fixes or suggestions from type-aware rules in
+/// content-mapped files, because a fix can include code that the mapper generated.
+fn drop_fixes_in_content_mapped_file(diagnostic: &mut TsGoLintRuleDiagnostic) {
+    if is_content_mapped_file(&diagnostic.file_path) {
+        diagnostic.fixes.clear();
+        diagnostic.suggestions.clear();
     }
 }
 
@@ -777,6 +872,10 @@ pub struct Payload {
     pub source_overrides: Option<FxHashMap<String, String>>,
     pub report_syntactic: bool,
     pub report_semantic: bool,
+    /// Lets the backend send notices (message type 3). Backends that do not know this field
+    /// ignore it. Not serialized when `false`, so the payload stays the same as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub report_notices: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -884,11 +983,54 @@ pub struct TsGoLintRuleTiming {
     pub calls: u64,
 }
 
+/// Represents a notice from the backend: information for the user that is not a diagnostic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TsGoLintNoticePayload {
+    pub id: String,
+    #[serde(default)]
+    pub tsconfig: Option<String>,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+}
+
+/// A notice from the type-aware backend. Oxlint shows it separately from diagnostics. It does
+/// not count as a warning or an error, and does not change the exit code.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TypeAwareNotice {
+    /// A `tsconfig.json` file lists content mappers, but Oxlint ran without
+    /// `--run-external-code`, so type-aware rules did not check the files of these mappers.
+    ContentMappersRequireRunExternalCode {
+        /// The absolute path of the `tsconfig.json` file.
+        tsconfig: PathBuf,
+        /// The file extensions of the mappers, such as `.vue`.
+        extensions: Vec<String>,
+    },
+}
+
+impl TypeAwareNotice {
+    const CONTENT_MAPPERS_REQUIRE_RUN_EXTERNAL_CODE: &str =
+        "content-mappers-require-run-external-code";
+
+    /// Returns `None` for notices that this version of Oxlint does not know.
+    fn from_payload(payload: TsGoLintNoticePayload) -> Option<Self> {
+        match payload.id.as_str() {
+            Self::CONTENT_MAPPERS_REQUIRE_RUN_EXTERNAL_CODE => {
+                Some(Self::ContentMappersRequireRunExternalCode {
+                    tsconfig: PathBuf::from(payload.tsconfig?),
+                    extensions: payload.extensions,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TsGoLintMessage {
     Diagnostic(TsGoLintDiagnostic),
     Error(TsGoLintError),
     Timing(TsGoLintTimingPayload),
+    Notice(TsGoLintNoticePayload),
 }
 
 #[derive(Debug, Clone)]
@@ -1049,6 +1191,7 @@ pub enum MessageType {
     Error = 0,
     Diagnostic = 1,
     Timing = 2,
+    Notice = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1070,6 +1213,7 @@ impl TryFrom<u8> for MessageType {
             0 => Ok(Self::Error),
             1 => Ok(Self::Diagnostic),
             2 => Ok(Self::Timing),
+            3 => Ok(Self::Notice),
             _ => Err(InvalidMessageType(value)),
         }
     }
@@ -1134,6 +1278,7 @@ enum TsGoLintMessageParseError {
     InvalidErrorPayload(serde_json::Error),
     InvalidDiagnosticPayload(serde_json::Error),
     InvalidTimingPayload(serde_json::Error),
+    InvalidNoticePayload(serde_json::Error),
 }
 
 impl std::fmt::Display for TsGoLintMessageParseError {
@@ -1149,6 +1294,9 @@ impl std::fmt::Display for TsGoLintMessageParseError {
             }
             TsGoLintMessageParseError::InvalidTimingPayload(e) => {
                 write!(f, "Failed to parse tsgolint timing payload: {e}")
+            }
+            TsGoLintMessageParseError::InvalidNoticePayload(e) => {
+                write!(f, "Failed to parse tsgolint notice payload: {e}")
             }
         }
     }
@@ -1170,6 +1318,7 @@ impl SourceTextCache {
 struct TsGoLintOutput {
     messages_requiring_fixes: Vec<(PathBuf, String, Vec<Message>)>,
     timings: Vec<TsGoLintRuleTiming>,
+    notices: Vec<TypeAwareNotice>,
 }
 
 /// Handles streaming and collecting diagnostics from tsgolint.
@@ -1377,8 +1526,9 @@ fn should_skip_diagnostic(
             || directives
                 .contains(&format!("@typescript-eslint/{}", tsgolint_diagnostic.rule), span)
     } else {
+        // A content-mapped file has no directives when it has no `<script>` block.
         debug_assert!(
-            false,
+            is_content_mapped_file(path),
             "missing disable_directives_map entry for {}; expected directives to be collected for every linted file",
             path.display()
         );
@@ -1460,6 +1610,12 @@ fn parse_single_message(
                 .map_err(TsGoLintMessageParseError::InvalidTimingPayload)?;
 
             Ok(TsGoLintMessage::Timing(timing_payload))
+        }
+        MessageType::Notice => {
+            let notice_payload = serde_json::from_str::<TsGoLintNoticePayload>(&payload_str)
+                .map_err(TsGoLintMessageParseError::InvalidNoticePayload)?;
+
+            Ok(TsGoLintMessage::Notice(notice_payload))
         }
     }
 }
@@ -1894,6 +2050,122 @@ mod test {
         assert_eq!(payload.rules[0].rule_name, "no-floating-promises");
         assert_eq!(payload.rules[0].duration, 123_456);
         assert_eq!(payload.rules[0].calls, 7);
+    }
+
+    fn notice_frame(payload: &serde_json::Value) -> Vec<u8> {
+        let payload = payload.to_string();
+        let payload = payload.as_bytes();
+        let mut bytes = Vec::new();
+        let payload_len: u32 = payload.len().try_into().expect("payload length should fit in u32");
+        bytes.extend_from_slice(&payload_len.to_le_bytes());
+        bytes.push(3);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn test_notice_message_deserialize() {
+        use std::path::PathBuf;
+
+        use super::{TsGoLintMessage, TypeAwareNotice, parse_single_message};
+
+        let bytes = notice_frame(&serde_json::json!({
+            "id": "content-mappers-require-run-external-code",
+            "tsconfig": "/project/tsconfig.json",
+            "extensions": [".vue", ".svelte"],
+        }));
+        let mut cursor = std::io::Cursor::new(bytes.as_slice());
+        let message = parse_single_message(&mut cursor).unwrap_or_else(|err| panic!("{err}"));
+        let TsGoLintMessage::Notice(payload) = message else {
+            panic!("expected notice message");
+        };
+        assert_eq!(
+            TypeAwareNotice::from_payload(payload),
+            Some(TypeAwareNotice::ContentMappersRequireRunExternalCode {
+                tsconfig: PathBuf::from("/project/tsconfig.json"),
+                extensions: vec![".vue".to_string(), ".svelte".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn test_unknown_notice_is_ignored() {
+        use super::{TsGoLintMessage, TypeAwareNotice, parse_single_message};
+
+        // A newer backend can send notices that this version of Oxlint does not know.
+        let bytes = notice_frame(&serde_json::json!({ "id": "some-future-notice", "data": 1 }));
+        let mut cursor = std::io::Cursor::new(bytes.as_slice());
+        let message = parse_single_message(&mut cursor).unwrap_or_else(|err| panic!("{err}"));
+        let TsGoLintMessage::Notice(payload) = message else {
+            panic!("expected notice message");
+        };
+        assert_eq!(TypeAwareNotice::from_payload(payload), None);
+    }
+
+    #[test]
+    fn test_payload_report_notices_is_omitted_when_false() {
+        use super::Payload;
+
+        // Older backends must receive the same payload as before.
+        let mut payload = Payload {
+            version: 2,
+            configs: vec![],
+            source_overrides: None,
+            report_syntactic: false,
+            report_semantic: false,
+            report_notices: false,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(json.get("report_notices").is_none());
+
+        payload.report_notices = true;
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["report_notices"], serde_json::Value::Bool(true));
+        assert_eq!(json["version"], serde_json::json!(2));
+    }
+
+    #[test]
+    fn test_fixes_are_dropped_in_content_mapped_files() {
+        use std::path::{Path, PathBuf};
+
+        use super::{drop_fixes_in_content_mapped_file, is_content_mapped_file};
+
+        assert!(is_content_mapped_file(Path::new("/project/App.vue")));
+        assert!(is_content_mapped_file(Path::new("/project/Page.svelte")));
+        assert!(is_content_mapped_file(Path::new("/project/index.astro")));
+        assert!(!is_content_mapped_file(Path::new("/project/index.ts")));
+        assert!(!is_content_mapped_file(Path::new("/project/vue")));
+
+        let diagnostic = |file_path: &str| TsGoLintRuleDiagnostic {
+            span: Span::new(0, 6),
+            rule: "no-floating-promises".to_string(),
+            message: RuleMessage {
+                id: "floating".to_string(),
+                description: "Promises must be awaited.".to_string(),
+                help: None,
+            },
+            fixes: vec![Fix { text: "void ".to_string(), range: Range { pos: 0, end: 0 } }],
+            suggestions: vec![Suggestion {
+                message: RuleMessage {
+                    id: "addVoid".to_string(),
+                    description: "Add void operator.".to_string(),
+                    help: None,
+                },
+                fixes: vec![Fix { text: "void ".to_string(), range: Range { pos: 0, end: 0 } }],
+            }],
+            labeled_ranges: vec![],
+            file_path: PathBuf::from(file_path),
+        };
+
+        let mut vue = diagnostic("/project/App.vue");
+        drop_fixes_in_content_mapped_file(&mut vue);
+        assert!(vue.fixes.is_empty());
+        assert!(vue.suggestions.is_empty());
+
+        let mut ts = diagnostic("/project/index.ts");
+        drop_fixes_in_content_mapped_file(&mut ts);
+        assert_eq!(ts.fixes.len(), 1);
+        assert_eq!(ts.suggestions.len(), 1);
     }
 
     #[test]
