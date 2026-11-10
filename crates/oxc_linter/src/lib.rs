@@ -295,6 +295,13 @@ impl Linter {
         self
     }
 
+    /// See [`LintOptions::type_aware_partial_loader_files`].
+    #[must_use]
+    pub fn with_type_aware_partial_loader_files(mut self, yes: bool) -> Self {
+        self.options.type_aware_partial_loader_files = yes;
+        self
+    }
+
     pub(crate) fn options(&self) -> &LintOptions {
         &self.options
     }
@@ -328,9 +335,11 @@ impl Linter {
 
     /// Same as `run` but also returns the disable directives for the file
     ///
-    /// For files with more than one section (Vue, Svelte, and Astro files), the returned
-    /// directives have spans in the whole file, and this function does not report unused
-    /// directives. The caller reports them, after type-aware linting has used the directives.
+    /// For files with more than one section (Vue, Svelte, and Astro files), directives are returned
+    /// only if [`LintOptions::type_aware_partial_loader_files`] is set. Then they have spans in the
+    /// whole file, and this function does not report unused directives: the caller reports them,
+    /// after type-aware linting has used the directives. Otherwise this function reports unused
+    /// directives of these files and returns `None` for them.
     ///
     /// # Parameters
     /// - `js_allocator_pool`: Optional pool of fixed-size allocators for copying AST before JS transfer.
@@ -515,13 +524,19 @@ impl Linter {
             }
         }
 
+        // Partial loader files (Vue/Astro/Svelte) return their directives only if the type-aware
+        // backend also lints them. Otherwise their unused directives are reported here, so that
+        // their fixes are applied together with the other fixes of the file.
+        let return_partial_loader_directives =
+            return_directives && self.options.type_aware_partial_loader_files;
+
         // Pass 3: Report unused enable/disable directives for every sub host.
-        // For other files, and for partial loader files (Vue/Astro/Svelte) whose directives are
-        // returned, the caller reports unused directives after type-aware linting.
+        // For other files, and for partial loader files whose directives are returned, the caller
+        // reports unused directives after type-aware linting.
         if let Some(severity) = self.options.report_unused_directive
             && severity.is_warn_deny()
             && is_partial_loader_file
-            && !return_directives
+            && !return_partial_loader_directives
         {
             ctx_host.rewind_sub_hosts();
             loop {
@@ -537,7 +552,8 @@ impl Linter {
         let disable_directives = if !return_directives {
             None
         } else if is_partial_loader_file {
-            Some(Rc::try_unwrap(ctx_host).unwrap().into_merged_disable_directives())
+            return_partial_loader_directives
+                .then(|| Rc::try_unwrap(ctx_host).unwrap().into_merged_disable_directives())
         } else {
             Rc::try_unwrap(ctx_host).unwrap().into_disable_directives()
         };

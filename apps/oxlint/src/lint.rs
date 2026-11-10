@@ -481,7 +481,8 @@ impl CliRunner {
 
         let linter = Linter::new(LintOptions::default(), config_store, external_linter)
             .with_fix(fix_options.fix_kind())
-            .with_report_unused_directives(report_unused_directives);
+            .with_report_unused_directives(report_unused_directives)
+            .with_type_aware_partial_loader_files(type_aware && self.options.run_external_code);
 
         let number_of_files = files_to_lint.len();
         let tsconfig = basic_options.tsconfig;
@@ -1438,6 +1439,15 @@ mod test {
             "unused_disable_directives_with_fix.js",
             "// oxlint-disable-next-line no-debugger\nvar x = new String('Hello world');\n",
             "// oxlint-disable-next-line no-debugger\nvar x = 'Hello world';\n",
+            fix_suggestions,
+        );
+        // In Vue, Svelte, and Astro files, unused directives are reported with the other reports
+        // of the file unless the type-aware backend also lints these files, so both fixes apply
+        // in one run.
+        tester.test_fix_with_args(
+            "unused_disable_directives_with_fix.vue",
+            "<script>\n// oxlint-disable-next-line no-debugger\nvar x = new String('Hello world');\n</script>\n",
+            "<script>\nvar x = 'Hello world';\n</script>\n",
             fix_suggestions,
         );
     }
