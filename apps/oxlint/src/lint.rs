@@ -2475,6 +2475,15 @@ load();
 
     #[test]
     #[cfg(all(not(target_os = "windows"), not(target_endian = "big")))]
+    fn test_run_external_code_with_tsgolint() {
+        // `tsgolint` cannot run content mappers, and stops with a panic when it gets a `.vue`
+        // file. So Oxlint stops with an error before it starts `tsgolint`.
+        let args = &["--type-aware", "--run-external-code"];
+        Tester::new().with_cwd("fixtures/cli/tsgolint_failure".into()).test_and_snapshot(args);
+    }
+
+    #[test]
+    #[cfg(all(not(target_os = "windows"), not(target_endian = "big")))]
     fn test_tsgolint_tsconfig_extends_config_err() {
         let args = &["--type-aware", "-D", "no-floating-promises"];
         Tester::new()

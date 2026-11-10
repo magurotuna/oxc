@@ -162,6 +162,28 @@ impl TsGoLintState {
         self
     }
 
+    /// Returns an error if content mappers are enabled, but the backend cannot run them.
+    ///
+    /// `tsgolint` cannot run content mappers, and stops with a panic when it gets a `.vue` file.
+    ///
+    /// # Errors
+    /// Returns a message for the user if the backend is `tsgolint`.
+    pub fn check_run_external_code(&self) -> Result<(), String> {
+        let is_tsgolint = self
+            .executable_path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("tsgolint"));
+        if self.run_external_code && is_tsgolint {
+            return Err(format!(
+                "`--run-external-code` needs a type-aware backend that can run content mappers, but `{}` is `tsgolint`, which cannot.\n\
+                 To check `.vue`, `.svelte`, and `.astro` files, add the `tsrs` package to your project, or remove `--run-external-code`.",
+                self.executable_path.display()
+            ));
+        }
+        Ok(())
+    }
+
     /// Returns `true` if `path` is sent to the backend.
     fn is_backend_file(&self, path: &Path) -> bool {
         SourceType::from_path(path).is_ok()

@@ -1,0 +1,12 @@
+---
+source: apps/oxlint/src/tester.rs
+---
+########## 
+arguments: --type-aware --run-external-code
+working directory: fixtures/cli/tsgolint_failure
+----------
+`--run-external-code` needs a type-aware backend that can run content mappers, but `<cwd>/fixtures/cli/tsgolint_failure/node_modules/.bin/tsgolint` is `tsgolint`, which cannot.
+To check `.vue`, `.svelte`, and `.astro` files, add the `tsrs` package to your project, or remove `--run-external-code`.
+----------
+CLI result: TsGoLintError
+----------

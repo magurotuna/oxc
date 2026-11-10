@@ -277,15 +277,17 @@ impl LintRunnerBuilder {
                 self.regular_linter.config.clone(),
                 self.fix_kind,
             ) {
-                Ok(state) => Some(
-                    state
+                Ok(state) => {
+                    let state = state
                         .with_silent(self.silent)
                         .with_type_check(self.type_check)
                         .with_type_check_only(self.type_check_only)
                         .with_timings(self.timings)
                         .with_ignore_fixes(self.with_ignore_fixes)
-                        .with_run_external_code(self.run_external_code),
-                ),
+                        .with_run_external_code(self.run_external_code);
+                    state.check_run_external_code()?;
+                    Some(state)
+                }
                 Err(e) => return Err(e),
             }
         } else {
