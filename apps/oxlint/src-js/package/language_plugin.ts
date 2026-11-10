@@ -103,6 +103,11 @@ export interface LanguageMapping {
  *
  * Oxlint adds these references to its scope analysis of the script, so that rules such as
  * `no-unused-vars` and `prefer-const` see the uses in the markup.
+ *
+ * Also return the uses that the framework adds and that the script does not show. For example, in Svelte:
+ * a store subscription `$store` in the script is a `read` of `store`, and a prop (`export let value`,
+ * `export { value }`, or a `$bindable()` prop) is a `read-write`, because the parent component can set it.
+ * Without the `write`, `prefer-const` reports the prop, and its fix changes `let` to `const`.
  */
 export interface MarkupReference {
   /** Name of the variable. */
@@ -125,10 +130,13 @@ export interface MarkupComment {
   /** Text of the comment, without its delimiters. */
   text: string;
   /**
-   * Offset where a block directive in this comment (`eslint-disable` without `-line`) stops applying.
-   * If omitted, the directive applies until a matching `eslint-enable` comment, or until the end of the file.
+   * End of the scope of this comment: the offset where its block directive (`eslint-disable` without `-line`)
+   * stops applying. If omitted, the scope ends at the end of the file.
    *
-   * For example, a Vue plugin can set this to the end of the `<template>` element, as `eslint-plugin-vue` does.
+   * Comments with the same `scopeEnd` are in one scope. An `eslint-enable` comment ends only the
+   * `eslint-disable` comments of its scope. So set the same `scopeEnd` on all comments of one scope,
+   * also on `eslint-enable` comments. For example, a Vue plugin can set it to the end of the `<template>`
+   * element for all comments in `<template>`, as `eslint-plugin-vue` does.
    */
   scopeEnd?: number;
 }

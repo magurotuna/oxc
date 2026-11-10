@@ -191,9 +191,10 @@ pub struct MarkupComment {
     pub end: u32,
     /// Text of the comment, without its delimiters.
     pub text: String,
-    /// Offset where a block directive (`eslint-disable` without `-line`) in this comment stops
-    /// applying (UTF-16 offset). If `None`, it applies until the end of the file, or until a
-    /// matching `eslint-enable` comment.
+    /// End of the scope of this comment: the offset where its block directive (`eslint-disable`
+    /// without `-line`) stops applying (UTF-16 offset). `None` is the end of the file. Comments with
+    /// the same `scope_end` are in one scope, and an `eslint-enable` comment ends only the
+    /// `eslint-disable` comments of its scope.
     pub scope_end: Option<u32>,
 }
 
