@@ -58,7 +58,11 @@ impl LanguageFileResult {
 
         let mut groups = BTreeMap::<u32, Vec<(Span, Span)>>::new();
         for comment in &self.markup_comments {
+            // A plugin can return a `scopeEnd` inside a character (for example between the two
+            // UTF-16 units of an emoji). Move it to the start of that character.
             let scope_end = comment.scope_end.unwrap_or(source_len).min(source_len);
+            #[expect(clippy::cast_possible_truncation)]
+            let scope_end = source_text.floor_char_boundary(scope_end as usize) as u32;
             let Some(comment_text) = source_text.get(comment.start as usize..comment.end as usize)
             else {
                 continue;
@@ -341,6 +345,22 @@ mod tests {
         assert!(!directives.contains("no-debugger", span_of(source_text, "y;")));
         // `no-alert` has no `scopeEnd`, so it covers the rest of the file
         assert!(directives.contains("no-alert", span_of(source_text, "z;")));
+    }
+
+    #[test]
+    fn a_scope_end_inside_a_character_is_moved_to_its_start() {
+        // Before, slicing the source text at `scopeEnd` panicked
+        let source_text = "<!-- eslint-disable no-debugger -->😀\n<script>debugger;</script>\n";
+        let mut markup_comment = comment(source_text, "<!-- eslint-disable no-debugger -->", None);
+        #[expect(clippy::cast_possible_truncation)]
+        let inside_emoji = (source_text.find('😀').unwrap() + 2) as u32;
+        markup_comment.scope_end = Some(inside_emoji);
+        let result = LanguageFileResult {
+            markup_comments: vec![markup_comment],
+            ..LanguageFileResult::default()
+        };
+        let directives = result.markup_directives(source_text, true).unwrap();
+        assert!(!directives.contains("no-debugger", span_of(source_text, "debugger;")));
     }
 
     #[test]
