@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use oxc_index::{IndexVec, define_index_type, index_vec};
 use serde::{Serialize, Serializer};
 
-use crate::ExternalLinter;
+use crate::{ExternalLinter, loader::LINTABLE_EXTENSIONS};
 
 define_index_type! {
     pub struct ExternalPluginId = u32;
@@ -361,10 +361,27 @@ impl LanguagePluginDefaultFiles {
     /// Parse the `defaultFiles` list of a plugin.
     ///
     /// # Errors
-    /// Returns an error for an entry that is not an extension or a file name.
+    /// Returns an error for an entry that is not an extension or a file name, and for an entry of
+    /// a file type that Oxlint cannot lint yet.
     pub fn parse(entries: &[String]) -> Result<Self, String> {
         fn has_glob_or_separator(text: &str) -> bool {
             text.contains(['*', '?', '[', ']', '{', '}', '!', '/', '\\'])
+        }
+        // Oxlint finds and reads only files with these extensions. Other file types need changes in
+        // file discovery, so they are an error for now, instead of a plugin that never runs.
+        fn check_lintable(entry: &str, extension: Option<&str>) -> Result<(), String> {
+            if extension.is_some_and(|extension| LINTABLE_EXTENSIONS.contains(&extension)) {
+                return Ok(());
+            }
+            Err(format!(
+                "`defaultFiles` entry `{entry}` is not supported yet. \
+                 Language plugins can parse only files with these extensions: {}.",
+                LINTABLE_EXTENSIONS
+                    .iter()
+                    .map(|extension| format!("`.{extension}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
         }
 
         let mut default_files = Self::default();
@@ -375,11 +392,13 @@ impl LanguagePluginDefaultFiles {
                 && extension.len() > 1
                 && !has_glob_or_separator(extension)
             {
+                check_lintable(entry, extension.rsplit('.').next())?;
                 default_files.extensions.push(extension.to_string());
             } else if extension.len() == entry.len()
                 && !matches!(entry.as_str(), "" | "." | "..")
                 && !has_glob_or_separator(entry)
             {
+                check_lintable(entry, Path::new(entry).extension().and_then(|ext| ext.to_str()))?;
                 default_files.file_names.push(entry.clone());
             } else {
                 return Err(format!(
@@ -416,17 +435,26 @@ mod test_language_plugin_default_files {
 
     #[test]
     fn extensions_and_file_names() {
-        let default_files = parse(&[".vue", "**/*.svelte", "*.astro", "Dockerfile"]).unwrap();
+        let default_files = parse(&[".vue", "**/*.svelte", "*.astro", "vite.config.ts"]).unwrap();
         assert!(default_files.matches("App.vue"));
         assert!(default_files.matches("App.svelte"));
         assert!(default_files.matches("index.astro"));
-        assert!(default_files.matches("Dockerfile"));
+        assert!(default_files.matches("vite.config.ts"));
         assert!(!default_files.matches("App.ts"));
         assert!(!default_files.matches("vue"));
-        assert!(!default_files.matches("Dockerfile.dev"));
+        assert!(!default_files.matches("vite.config.ts.bak"));
 
-        let default_files = parse(&[".prettierrc"]).unwrap();
-        assert!(default_files.matches(".prettierrc"));
+        let default_files = parse(&[".d.ts"]).unwrap();
+        assert!(default_files.matches("types.d.ts"));
+        assert!(!default_files.matches("types.ts"));
+    }
+
+    #[test]
+    fn file_types_that_oxlint_cannot_lint_are_errors() {
+        for entry in [".json", ".md", "**/*.html", "Dockerfile", ".prettierrc", "package.json"] {
+            let error = parse(&[entry]).unwrap_err();
+            assert!(error.contains("is not supported yet"), "`{entry}`: {error}");
+        }
     }
 
     #[test]
