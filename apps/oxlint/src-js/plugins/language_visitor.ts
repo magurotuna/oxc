@@ -299,10 +299,10 @@ export function walkLanguageAst(ast: LanguageNode, keys: Record<string, readonly
   };
   visit(ast, (ast.parent as LanguageNode | undefined) ?? null);
 
+  // No `nodeTypeKey`: with it, esquery matches no class selector such as `:function`
   const esqueryOptions: ESQueryOptions = {
     visitorKeys: keys as Record<string, string[]>,
     fallback: (node) => [...getChildKeys(node as unknown as LanguageNode, keys)],
-    nodeTypeKey: "type",
   };
 
   for (let i = 0, len = stepKinds.length; i < len; i++) {

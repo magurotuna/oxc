@@ -46,9 +46,43 @@ const sourceCodeInfo: Rule = {
   },
 };
 
+// Reports the matches of class selectors such as `:function`, in files with functions
+const classSelectors: Rule = {
+  create(context) {
+    const functions: string[] = [];
+    let statements = 0;
+    let expressions = 0;
+    return {
+      ":function"(node: any) {
+        functions.push(`enter ${node.type}`);
+      },
+      ":function:exit"(node: any) {
+        functions.push(`exit ${node.type}`);
+      },
+      ":statement"() {
+        statements++;
+      },
+      ":expression"() {
+        expressions++;
+      },
+      "Program:exit"(node: any) {
+        if (functions.length === 0) return;
+        context.report({
+          node,
+          message: `:function: ${functions.join(", ")}; :statement: ${statements}; :expression: ${expressions}`,
+        });
+      },
+    };
+  },
+};
+
 const plugin: Plugin = {
   meta: { name: "source-code" },
-  rules: { "global-references": globalReferences, "source-code-info": sourceCodeInfo },
+  rules: {
+    "class-selectors": classSelectors,
+    "global-references": globalReferences,
+    "source-code-info": sourceCodeInfo,
+  },
 };
 
 export default plugin;

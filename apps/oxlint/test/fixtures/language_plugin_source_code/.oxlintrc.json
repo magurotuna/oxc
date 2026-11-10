@@ -5,6 +5,7 @@
   "env": { "builtin": true },
   "globals": { "customGlobal": "readonly", "offGlobal": "off" },
   "rules": {
+    "source-code/class-selectors": "error",
     "source-code/global-references": "error",
     "source-code/source-code-info": "error"
   }
