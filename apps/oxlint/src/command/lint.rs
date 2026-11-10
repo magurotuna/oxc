@@ -62,6 +62,12 @@ pub struct LintCommand {
     #[bpaf(long("type-check-only"), switch, hide)]
     pub type_check_only: bool,
 
+    /// Let the type-aware backend run the content mappers that `tsconfig.json` files list in
+    /// `contentMappers`, so that type-aware rules also check `.vue`, `.svelte`, and `.astro`
+    /// files. Content mappers are programs from your dependencies.
+    #[bpaf(long("run-external-code"), switch, hide_usage)]
+    pub run_external_code: bool,
+
     #[bpaf(external)]
     pub inline_config_options: InlineConfigOptions,
 
@@ -795,6 +801,14 @@ mod lint_options {
         assert!(options.type_check_only);
         let options = get_lint_options(".");
         assert!(!options.type_check_only);
+    }
+
+    #[test]
+    fn run_external_code() {
+        let options = get_lint_options("--type-aware --run-external-code");
+        assert!(options.run_external_code);
+        let options = get_lint_options("--type-aware");
+        assert!(!options.run_external_code);
     }
 
     #[test]

@@ -1,0 +1,133 @@
+---
+source: apps/oxlint/src/tester.rs
+---
+########## 
+arguments: --type-aware --run-external-code --report-unused-disable-directives
+working directory: fixtures/cli/content_mapper
+----------
+
+  ! Unused eslint-disable directive (no problems were reported).
+   ,-[src/App.vue:5:1]
+ 4 | load();
+ 5 | // eslint-disable-next-line typescript/no-misused-promises
+   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 6 | const value = 1;
+   `----
+
+  x typescript(no-floating-promises): Promises must be awaited.
+   ,-[src/App.vue:7:1]
+ 6 | const value = 1;
+ 7 | load();
+   : ^^^^^^
+ 8 | </script>
+   `----
+
+  x typescript(no-misused-promises): Promise-returning function provided to attribute where a void return was expected.
+    ,-[src/App.vue:11:19]
+ 10 | <template>
+ 11 |   <button @click="load">{{ value }}</button>
+    :                   ^^|^^
+    :                     `-- This callback has type `() => Promise<void>`.
+ 12 | </template>
+    `----
+
+  x typescript(no-floating-promises): Promises must be awaited.
+   ,-[src/index.ts:2:1]
+ 1 | async function run(): Promise<void> {}
+ 2 | run();
+   : ^^^^^
+   `----
+
+Found 1 warning and 3 errors.
+Finished in <variable>ms on 3 files with 2 rules using 1 threads.
+----------
+CLI result: LintFoundErrors
+----------
+
+########## 
+arguments: --type-aware --report-unused-disable-directives
+working directory: fixtures/cli/content_mapper
+----------
+
+  ! Unused eslint-disable directive (no problems were reported).
+   ,-[src/App.vue:3:1]
+ 2 | async function load(): Promise<void> {}
+ 3 | // eslint-disable-next-line typescript/no-floating-promises
+   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 4 | load();
+   `----
+
+  ! Unused eslint-disable directive (no problems were reported).
+   ,-[src/App.vue:5:1]
+ 4 | load();
+ 5 | // eslint-disable-next-line typescript/no-misused-promises
+   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 6 | const value = 1;
+   `----
+
+  x typescript(no-floating-promises): Promises must be awaited.
+   ,-[src/index.ts:2:1]
+ 1 | async function run(): Promise<void> {}
+ 2 | run();
+   : ^^^^^
+   `----
+
+Found 2 warnings and 1 error.
+
+Warning: `tsconfig.json` specifies `contentMappers`, but Oxlint ran without `--run-external-code`.
+In this run, Oxlint does not use the content mappers, so type-aware rules do not check `.vue` files.
+To check these files, add `--run-external-code`. This flag runs the mapper programs that `contentMappers` lists.
+
+Finished in <variable>ms on 3 files with 2 rules using 1 threads.
+----------
+CLI result: LintFoundErrors
+----------
+
+########## 
+arguments: --type-aware --deny-warnings --max-warnings 0 src/clean.ts
+working directory: fixtures/cli/content_mapper
+----------
+Found 0 warnings and 0 errors.
+
+Warning: `tsconfig.json` specifies `contentMappers`, but Oxlint ran without `--run-external-code`.
+In this run, Oxlint does not use the content mappers, so type-aware rules do not check `.vue` files.
+To check these files, add `--run-external-code`. This flag runs the mapper programs that `contentMappers` lists.
+
+Finished in <variable>ms on 1 file with 2 rules using 1 threads.
+----------
+CLI result: LintSucceeded
+----------
+
+########## 
+arguments: --type-aware --format json src/clean.ts
+working directory: fixtures/cli/content_mapper
+----------
+{ "diagnostics": [],
+              "number_of_files": 1,
+              "number_of_rules": 2,
+              "threads_count": 1,
+              "start_time": <variable>
+            }
+            ----------
+CLI result: LintSucceeded
+----------
+
+########## 
+arguments: --type-aware --silent src/clean.ts
+working directory: fixtures/cli/content_mapper
+----------
+Found 0 warnings and 0 errors.
+Finished in <variable>ms on 1 file with 2 rules using 1 threads.
+----------
+CLI result: LintSucceeded
+----------
+
+########## 
+arguments: --type-check-only --run-external-code
+working directory: fixtures/cli/content_mapper
+----------
+Found 0 warnings and 0 errors.
+Finished in <variable>ms on 3 files using 1 threads.
+----------
+CLI result: LintSucceeded
+----------

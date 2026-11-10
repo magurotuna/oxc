@@ -106,5 +106,9 @@ Available options:
         --type-aware          Enable rules that require type information
         --type-check          Enable experimental type checking (includes TypeScript compiler
                               diagnostics)
+        --run-external-code   Let the type-aware backend run the content mappers that
+                              `tsconfig.json` files list in `contentMappers`, so that type-aware
+                              rules also check `.vue`, `.svelte`, and `.astro` files. Content
+                              mappers are programs from your dependencies.
     -h, --help                Prints help information
     -V, --version             Prints version information

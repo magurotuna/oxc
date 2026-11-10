@@ -19,6 +19,7 @@ use oxc_linter::{
     AllowWarnDeny, ConfigBuilderError, ConfigStore, ConfigStoreBuilder, ExternalLinter,
     ExternalPluginStore, InvalidFilterKind, LintFilter, LintOptions, LintRunner,
     LintServiceOptions, Linter, OxlintSuppressionFileAction, RuleTimingStore, SuppressionManager,
+    TypeAwareNotice,
 };
 
 #[cfg(feature = "napi")]
@@ -31,7 +32,7 @@ use crate::{
         CliConfigLoadError, ConfigLoadError, ConfigLoader, config_discovery,
         materialize_default_plugins,
     },
-    output_formatter::{LintCommandInfo, OutputFormatter},
+    output_formatter::{LintCommandInfo, OutputFormat, OutputFormatter},
     walk::Walk,
 };
 use oxc_linter::LintIgnoreMatcher;
@@ -525,6 +526,7 @@ impl CliRunner {
             .with_fix_kind(fix_options.fix_kind())
             .with_type_check_only(type_check_only)
             .with_timings(debug_timings)
+            .with_run_external_code(self.options.run_external_code)
             .build()
         {
             Ok(runner) => runner,
@@ -563,6 +565,7 @@ impl CliRunner {
                 };
                 let lint_runner = lint_result?;
                 lint_runner.report_unused_directives(report_unused_directives, &tx_error);
+                let notices = lint_runner.notices().to_vec();
 
                 // A suppression file can contain regular lint rules that were not run in
                 // type-check-only mode, so its runtime diff is incomplete and cannot be used to
@@ -575,7 +578,7 @@ impl CliRunner {
 
                 // Close the channel, so that `diagnostic_service.run` returns.
                 drop(tx_error);
-                Ok(result)
+                Ok((result, notices))
             });
 
             let mut rendered = Vec::new();
@@ -585,7 +588,7 @@ impl CliRunner {
             (lint_result, diagnostic_result, rendered)
         });
 
-        let result = match lint_result {
+        let (result, notices) = match lint_result {
             Ok(result) => result,
             Err(err) => {
                 print_and_flush_stdout(stdout, &format!("{err}\n"));
@@ -593,6 +596,21 @@ impl CliRunner {
             }
         };
         write_and_flush_stdout(stdout, &rendered);
+
+        // Notices are not diagnostics: they do not count as warnings and do not change the exit
+        // code. Only the human-readable formats print them to stdout, so the other formats keep
+        // their output valid.
+        if !notices.is_empty() && !misc_options.silent && !warning_options.quiet {
+            let text: String =
+                notices.iter().map(|notice| render_type_aware_notice(notice, &cwd)).collect();
+            if matches!(format_str, OutputFormat::Default | OutputFormat::Stylish) {
+                // Separate the notices from the summary line of the diagnostics.
+                print_and_flush_stdout(stdout, &format!("\n{text}"));
+            } else {
+                let mut stderr = std::io::stderr();
+                write_and_flush_stdout(&mut stderr, text.as_bytes());
+            }
+        }
 
         let suppress_all_succeeded = suppression_options.suppress_all && result.is_ok();
 
@@ -766,6 +784,36 @@ fn check_for_writer_error(error: std::io::Error) -> Result<(), std::io::Error> {
         Ok(())
     } else {
         Err(error)
+    }
+}
+
+/// Renders a notice from the type-aware backend, followed by an empty line.
+fn render_type_aware_notice(notice: &TypeAwareNotice, cwd: &Path) -> String {
+    match notice {
+        TypeAwareNotice::ContentMappersRequireRunExternalCode { tsconfig, extensions } => {
+            let tsconfig = tsconfig.strip_prefix(cwd).unwrap_or(tsconfig);
+            let tsconfig = tsconfig.to_string_lossy();
+            let tsconfig = tsconfig.cow_replace('\\', "/");
+            let files = match extensions.as_slice() {
+                [] => "the files of these content mappers".to_string(),
+                [extension] => format!("`{extension}` files"),
+                [first, second] => format!("`{first}` and `{second}` files"),
+                [rest @ .., last] => {
+                    let mut files = String::new();
+                    for extension in rest {
+                        files.push('`');
+                        files.push_str(extension);
+                        files.push_str("`, ");
+                    }
+                    format!("{files}and `{last}` files")
+                }
+            };
+            format!(
+                "Warning: `{tsconfig}` specifies `contentMappers`, but Oxlint ran without `--run-external-code`.\n\
+                 In this run, Oxlint does not use the content mappers, so type-aware rules do not check {files}.\n\
+                 To check these files, add `--run-external-code`. This flag runs the mapper programs that `contentMappers` lists.\n\n"
+            )
+        }
     }
 }
 
@@ -2297,6 +2345,132 @@ mod test {
         // Only the error is printed; diagnostics from regular linting are not.
         let args = &["--type-aware"];
         Tester::new().with_cwd("fixtures/cli/tsgolint_failure".into()).test_and_snapshot(args);
+    }
+
+    #[test]
+    #[cfg(all(not(target_os = "windows"), not(target_endian = "big")))]
+    fn test_content_mapper() {
+        // The fixture has a fake `tsrs-lint`. It reports on `src/App.vue` only if Oxlint lets it
+        // run content mappers, and it sends notices otherwise. It fails if Oxlint sends
+        // `src/App.vue` without `--run-external-code`.
+        let args: &[&[&str]] = &[
+            // Reports in `src/App.vue` are at their positions in the whole file. The
+            // `eslint-disable-next-line` comment in `<script>` suppresses a type-aware report, so
+            // only the other comment is reported as unused.
+            &["--type-aware", "--run-external-code", "--report-unused-disable-directives"],
+            // Without the flag, the notice is shown once, after the diagnostics.
+            &["--type-aware", "--report-unused-disable-directives"],
+            // The notice does not count as a warning, and does not change the exit code.
+            &["--type-aware", "--deny-warnings", "--max-warnings", "0", "src/clean.ts"],
+            // The notice is not in the JSON output.
+            &["--type-aware", "--format", "json", "src/clean.ts"],
+            // `--silent` hides the notice.
+            &["--type-aware", "--silent", "src/clean.ts"],
+            // `--type-check-only` also sends `.vue` files with the flag.
+            &["--type-check-only", "--run-external-code"],
+        ];
+        Tester::new()
+            .with_cwd("fixtures/cli/content_mapper".into())
+            .test_and_snapshot_named("content_mapper", args);
+    }
+
+    #[test]
+    #[cfg(all(not(target_os = "windows"), not(target_endian = "big")))]
+    fn test_content_mapper_does_not_fix_vue_files() {
+        // The fake `tsrs-lint` sends a fix and a suggestion for `src/App.vue`. In Phase 1, Oxlint
+        // does not apply them, because a fix can include code that the mapper generated.
+        let source = "<script setup lang=\"ts\">
+async function load(): Promise<void> {}
+// eslint-disable-next-line typescript/no-floating-promises
+load();
+// eslint-disable-next-line typescript/no-misused-promises
+const value = 1;
+load();
+</script>
+
+<template>
+  <button @click=\"load\">{{ value }}</button>
+</template>
+";
+        Tester::new().with_cwd("fixtures/cli/content_mapper".into()).test_fix_with_args(
+            "src/App.vue",
+            source,
+            source,
+            &["--type-aware", "--run-external-code", "--fix-suggestions"],
+        );
+    }
+
+    #[test]
+    fn test_render_type_aware_notice() {
+        use std::path::{Path, PathBuf};
+
+        use oxc_linter::TypeAwareNotice;
+
+        let notice = |extensions: &[&str]| TypeAwareNotice::ContentMappersRequireRunExternalCode {
+            tsconfig: PathBuf::from("/project/packages/app/tsconfig.json"),
+            extensions: extensions.iter().map(ToString::to_string).collect(),
+        };
+        let cwd = Path::new("/project");
+
+        assert_eq!(
+            super::render_type_aware_notice(&notice(&[".vue", ".svelte"]), cwd),
+            "Warning: `packages/app/tsconfig.json` specifies `contentMappers`, but Oxlint ran without `--run-external-code`.\n\
+             In this run, Oxlint does not use the content mappers, so type-aware rules do not check `.vue` and `.svelte` files.\n\
+             To check these files, add `--run-external-code`. This flag runs the mapper programs that `contentMappers` lists.\n\n"
+        );
+        assert!(
+            super::render_type_aware_notice(&notice(&[".vue"]), cwd)
+                .contains("type-aware rules do not check `.vue` files.")
+        );
+        assert!(
+            super::render_type_aware_notice(&notice(&[".vue", ".svelte", ".astro"]), cwd)
+                .contains("type-aware rules do not check `.vue`, `.svelte`, and `.astro` files.")
+        );
+    }
+
+    /// End-to-end test with a real `tsrs-lint` that runs content mappers.
+    ///
+    /// Runs only if `OXLINT_CONTENT_MAPPER_E2E_NODE_MODULES` is set. Set it to the path of a
+    /// `node_modules` directory that has the packages in `fixtures/cli/content_mapper_e2e/package.json`
+    /// and a `.bin/tsrs-lint` built from tsrs with content mapper support.
+    #[test]
+    #[cfg(all(unix, not(target_endian = "big")))]
+    fn test_content_mapper_e2e() {
+        let Ok(node_modules) = std::env::var("OXLINT_CONTENT_MAPPER_E2E_NODE_MODULES") else {
+            return;
+        };
+        let fixture = std::env::current_dir().unwrap().join("fixtures/cli/content_mapper_e2e");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        for file in ["tsconfig.json", ".oxlintrc.json", "src/Example.vue", "src/main.ts"] {
+            std::fs::copy(fixture.join(file), dir.path().join(file)).unwrap();
+        }
+        std::os::unix::fs::symlink(node_modules, dir.path().join("node_modules")).unwrap();
+        let tester = Tester::new().with_cwd(dir.path().to_path_buf());
+
+        let output = tester.test_output_verbose(&["--type-aware", "--run-external-code", "src"]);
+        for expected in [
+            "typescript(no-unnecessary-condition)",
+            "[src/Example.vue:12:12]",
+            "typescript(no-misused-promises)",
+            "[src/Example.vue:14:19]",
+            "typescript(no-floating-promises)",
+            "[src/main.ts:3:1]",
+            "Found 0 warnings and 3 errors.",
+        ] {
+            assert!(output.contains(expected), "missing `{expected}` in:\n{output}");
+        }
+        assert!(!output.contains("Warning: `tsconfig.json`"), "unexpected notice in:\n{output}");
+
+        let output = tester.test_output_verbose(&["--type-aware", "src"]);
+        for expected in [
+            "[src/main.ts:3:1]",
+            "Found 0 warnings and 1 error.",
+            "Warning: `tsconfig.json` specifies `contentMappers`, but Oxlint ran without `--run-external-code`.",
+        ] {
+            assert!(output.contains(expected), "missing `{expected}` in:\n{output}");
+        }
+        assert!(!output.contains("src/Example.vue"), "unexpected `.vue` report in:\n{output}");
     }
 
     #[test]
