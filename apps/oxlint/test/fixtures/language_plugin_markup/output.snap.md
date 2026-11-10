@@ -63,6 +63,25 @@
    `----
   help: Consider removing this declaration.
 
+  x eslint(no-unused-vars): Variable 'unusedInModule' is declared but never used. Unused variables should start with a '_'.
+   ,-[files/Module.svelte:3:9]
+ 2 |   const fromModule = 1;
+ 3 |   const unusedInModule = 1;
+   :         ^^^^^^^|^^^^^^
+   :                `-- 'unusedInModule' is declared here
+ 4 | </script>
+   `----
+  help: Consider removing this declaration.
+
+  x eslint(prefer-const): `local` is never reassigned.
+   ,-[files/Module.svelte:7:7]
+ 6 | <script>
+ 7 |   let local = fromModule;
+   :       ^^^^^
+ 8 | </script>
+   `----
+  help: Use `const` instead.
+
   x eslint(no-unused-vars): Variable 'clientOnly' is declared but never used. Unused variables should start with a '_'.
    ,-[files/NoFrontmatter.astro:3:9]
  2 | <script>
@@ -128,8 +147,38 @@
  6 | </template>
    `----
 
-Found 3 warnings and 11 errors.
-Finished in Xms on 6 files with 4 rules using X threads.
+  x eslint(no-unused-vars): Variable 'reassignedInSetup' is declared but never used. Unused variables should start with a '_'.
+   ,-[files/TwoScripts.vue:6:5]
+ 5 | const sharedConstant = 1;
+ 6 | let reassignedInSetup = 1;
+   :     ^^^^^^^^|^^^^^^^^
+   :             `-- 'reassignedInSetup' is declared here
+ 7 | const unusedInScript = 1;
+   `----
+  help: Consider removing this declaration.
+
+  x eslint(no-unused-vars): Variable 'unusedInScript' is declared but never used. Unused variables should start with a '_'.
+   ,-[files/TwoScripts.vue:7:7]
+ 6 | let reassignedInSetup = 1;
+ 7 | const unusedInScript = 1;
+   :       ^^^^^^^|^^^^^^
+   :              `-- 'unusedInScript' is declared here
+ 8 | </script>
+   `----
+  help: Consider removing this declaration.
+
+  x eslint(no-unused-vars): Variable 'unusedInSetup' is declared but never used. Unused variables should start with a '_'.
+    ,-[files/TwoScripts.vue:12:7]
+ 11 | reassignedInSetup = 2;
+ 12 | const unusedInSetup = 1;
+    :       ^^^^^^|^^^^^^
+    :             `-- 'unusedInSetup' is declared here
+ 13 | </script>
+    `----
+  help: Consider removing this declaration.
+
+Found 3 warnings and 16 errors.
+Finished in Xms on 8 files with 4 rules using X threads.
 ```
 
 # stderr

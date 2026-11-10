@@ -150,6 +150,10 @@ pub struct MarkupUses {
     /// If `true`, only the first section can be used by the markup (the frontmatter of an Astro
     /// file). Other `<script>` blocks of Astro files are separate client scripts.
     first_section_only: bool,
+    /// Unresolved references of each section, by name, if the sections share one scope.
+    /// For example, `<script setup>` of a Vue file can use the variables of its `<script>`, and the
+    /// instance `<script>` of a Svelte file can use the variables of its `<script module>`.
+    section_uses: Vec<FxHashMap<String, MarkupUse>>,
 }
 
 impl MarkupUses {
@@ -170,8 +174,24 @@ impl MarkupUses {
                 }
             }
         }
-        Self { uses, first_section_only }
+        Self { uses, first_section_only, section_uses: vec![] }
     }
+}
+
+/// The uses of names that a section does not declare, such as the variables of another section.
+fn unresolved_uses(semantic: &Semantic<'_>) -> FxHashMap<String, MarkupUse> {
+    let scoping = semantic.scoping();
+    let mut uses = FxHashMap::<String, MarkupUse>::default();
+    for (name, reference_ids) in scoping.root_unresolved_references() {
+        let mut entry = MarkupUse::default();
+        for &reference_id in reference_ids {
+            let flags = scoping.get_reference(reference_id).flags();
+            entry.read |= flags.is_read() || flags.is_type();
+            entry.write |= flags.is_write();
+        }
+        uses.insert(name.as_str().to_string(), entry);
+    }
+    uses
 }
 
 /// Stores shared information about a file being linted.
@@ -288,7 +308,18 @@ impl<'a> ContextHost<'a> {
     }
 
     /// Set the uses of top-level script variables in the markup of the file.
-    pub(crate) fn with_markup_uses(mut self, markup_uses: Option<MarkupUses>) -> Self {
+    ///
+    /// Unless only the first section can be used by the markup (Astro), the sections of the file
+    /// share one scope, as in the ESLint parsers of Vue and Svelte. So the unresolved references of
+    /// each section also count as uses of the variables of the other sections.
+    pub(crate) fn with_markup_uses(mut self, mut markup_uses: Option<MarkupUses>) -> Self {
+        if let Some(markup_uses) = &mut markup_uses
+            && !markup_uses.first_section_only
+            && self.sub_hosts.len() > 1
+        {
+            markup_uses.section_uses =
+                self.sub_hosts.iter().map(|sub_host| unresolved_uses(&sub_host.semantic)).collect();
+        }
         self.markup_uses = markup_uses;
         self
     }
@@ -299,13 +330,26 @@ impl<'a> ContextHost<'a> {
         self.markup_uses.is_some()
     }
 
-    /// How the markup uses the top-level variable `name` of the current section.
+    /// How the markup, and the other sections of the file, use the top-level variable `name` of
+    /// the current section.
     pub(crate) fn markup_use(&self, name: &str) -> Option<MarkupUse> {
         let markup_uses = self.markup_uses.as_ref()?;
-        if markup_uses.first_section_only && self.current_sub_host_index.get() != 0 {
+        let current_index = self.current_sub_host_index.get();
+        if markup_uses.first_section_only && current_index != 0 {
             return None;
         }
-        markup_uses.uses.get(name).copied()
+        let mut result = markup_uses.uses.get(name).copied();
+        for (index, section_uses) in markup_uses.section_uses.iter().enumerate() {
+            if index == current_index {
+                continue;
+            }
+            if let Some(section_use) = section_uses.get(name) {
+                let entry = result.get_or_insert_default();
+                entry.read |= section_use.read;
+                entry.write |= section_use.write;
+            }
+        }
+        result
     }
 
     /// Config-derived environment additions for the shared React Compiler run.

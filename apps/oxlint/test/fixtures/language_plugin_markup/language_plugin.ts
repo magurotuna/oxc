@@ -13,7 +13,7 @@ import type { LanguageNode, MarkupComment, MarkupReference } from "#oxlint/langu
 // - Files whose name contains `NoReferences` have no `markupReferences`.
 export default defineLanguagePlugin({
   meta: { name: "markup" },
-  defaultFiles: [".vue", ".astro"],
+  defaultFiles: [".vue", ".svelte", ".astro"],
   visitorKeys: {
     nodes: { Program: { children: ["Element"] }, Element: {} },
   },
