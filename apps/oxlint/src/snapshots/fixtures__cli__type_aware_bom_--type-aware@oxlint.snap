@@ -1,0 +1,21 @@
+---
+source: apps/oxlint/src/tester.rs
+---
+########## 
+arguments: --type-aware
+working directory: fixtures/cli/type_aware_bom
+----------
+
+  x typescript(no-floating-promises): Promises must be awaited.
+   ,-[bom.ts:2:1]
+ 1 | ﻿async function run(): Promise<void> {}
+ 2 | run();
+   : ^^|^^^
+   :   `-- This promise is not handled.
+   `----
+
+Found 0 warnings and 1 error.
+Finished in <variable>ms on 1 file with 1 rules using 1 threads.
+----------
+CLI result: LintFoundErrors
+----------

@@ -345,6 +345,7 @@ impl TsGoLintRun {
                 );
                 let mut timings = vec![];
                 let mut notices = BTreeSet::new();
+                let mut bom_offsets = BomOffsets::default();
 
                 for msg in messages {
                     match msg {
@@ -355,6 +356,7 @@ impl TsGoLintRun {
                             match tsgolint_diagnostic {
                                 TsGoLintDiagnostic::Rule(mut tsgolint_diagnostic) => {
                                     drop_fixes_in_content_mapped_file(&mut tsgolint_diagnostic);
+                                    bom_offsets.move_rule_diagnostic(&mut tsgolint_diagnostic);
                                     let path = &tsgolint_diagnostic.file_path;
 
                                     let severity = resolved_configs
@@ -397,7 +399,8 @@ impl TsGoLintRun {
                                         diff_manager_clone_to_ts_go.skip(),
                                     );
                                 }
-                                TsGoLintDiagnostic::Internal(e) => {
+                                TsGoLintDiagnostic::Internal(mut e) => {
+                                    bom_offsets.move_internal_diagnostic(&mut e);
                                     diagnostic_handler.handle_internal_diagnostic(e);
                                 }
                             }
@@ -839,6 +842,59 @@ impl TsGoLintState {
     }
 }
 
+/// The backend reads files from disk without their byte order mark (BOM), so its offsets are
+/// positions in the text without the BOM. Oxlint uses the text with the BOM, so the offsets of
+/// these files must move by the length of the BOM.
+///
+/// When Oxlint sends the source text in `source_overrides`, the text keeps its BOM, and the
+/// offsets are already right. So use this only for files that the backend reads from disk.
+#[derive(Default)]
+struct BomOffsets(FxHashMap<PathBuf, u32>);
+
+impl BomOffsets {
+    /// The UTF-8 encoding of U+FEFF.
+    const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
+    fn get(&mut self, path: &Path) -> u32 {
+        *self.0.entry(path.to_path_buf()).or_insert_with(|| {
+            let mut start = [0u8; 3];
+            let starts_with_bom = std::fs::File::open(path)
+                .and_then(|mut file| file.read_exact(&mut start))
+                .is_ok_and(|()| start == Self::BOM);
+            if starts_with_bom { 3 } else { 0 }
+        })
+    }
+
+    fn move_rule_diagnostic(&mut self, diagnostic: &mut TsGoLintRuleDiagnostic) {
+        let offset = self.get(&diagnostic.file_path);
+        if offset == 0 {
+            return;
+        }
+        diagnostic.span = diagnostic.span.move_right(offset);
+        for labeled_range in &mut diagnostic.labeled_ranges {
+            labeled_range.range.move_right(offset);
+        }
+        for fix in diagnostic
+            .fixes
+            .iter_mut()
+            .chain(diagnostic.suggestions.iter_mut().flat_map(|suggestion| &mut suggestion.fixes))
+        {
+            fix.range.move_right(offset);
+        }
+    }
+
+    fn move_internal_diagnostic(&mut self, diagnostic: &mut TsGoLintInternalDiagnostic) {
+        if let Some(file_path) = &diagnostic.file_path
+            && let Some(span) = &mut diagnostic.span
+        {
+            let offset = self.get(file_path);
+            if offset != 0 {
+                *span = span.move_right(offset);
+            }
+        }
+    }
+}
+
 /// Returns `true` if `path` is a file that a content mapper can turn into TypeScript: a `.vue`,
 /// `.svelte`, or `.astro` file. The check uses only the extension.
 pub fn is_content_mapped_file(path: &Path) -> bool {
@@ -1180,6 +1236,13 @@ impl Message {
 pub struct Range {
     pub pos: u32,
     pub end: u32,
+}
+
+impl Range {
+    fn move_right(&mut self, offset: u32) {
+        self.pos += offset;
+        self.end += offset;
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

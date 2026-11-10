@@ -2475,6 +2475,21 @@ load();
 
     #[test]
     #[cfg(all(not(target_os = "windows"), not(target_endian = "big")))]
+    fn test_type_aware_file_with_bom() {
+        // The backend reads `bom.ts` without its byte order mark (BOM), so its offsets are 3
+        // bytes too small for the text that Oxlint uses.
+        let args = &["--type-aware"];
+        Tester::new().with_cwd("fixtures/cli/type_aware_bom".into()).test_and_snapshot(args);
+        Tester::new().with_cwd("fixtures/cli/type_aware_bom".into()).test_fix_with_args(
+            "bom.ts",
+            "\u{feff}async function run(): Promise<void> {}\nrun();\n",
+            "\u{feff}async function run(): Promise<void> {}\nvoid run();\n",
+            &["--type-aware"],
+        );
+    }
+
+    #[test]
+    #[cfg(all(not(target_os = "windows"), not(target_endian = "big")))]
     fn test_run_external_code_with_tsgolint() {
         // `tsgolint` cannot run content mappers, and stops with a panic when it gets a `.vue`
         // file. So Oxlint stops with an error before it starts `tsgolint`.
