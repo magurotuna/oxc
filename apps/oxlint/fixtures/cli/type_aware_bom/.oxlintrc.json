@@ -1,6 +1,9 @@
 {
-  "categories": { "correctness": "off" },
+  "categories": {
+    "correctness": "off"
+  },
   "rules": {
-    "typescript/no-floating-promises": "error"
+    "typescript/no-floating-promises": "error",
+    "typescript/consistent-type-exports": "error"
   }
 }

@@ -870,7 +870,12 @@ impl BomOffsets {
         if offset == 0 {
             return;
         }
-        diagnostic.span = diagnostic.span.move_right(offset);
+        // A report with labels may have no main range. Its span `0..0` is not a position, so it
+        // must stay `0..0`: the report then uses its first label, for example for directives.
+        let label_only = diagnostic.span.is_unspanned() && !diagnostic.labeled_ranges.is_empty();
+        if !label_only {
+            diagnostic.span = diagnostic.span.move_right(offset);
+        }
         for labeled_range in &mut diagnostic.labeled_ranges {
             labeled_range.range.move_right(offset);
         }

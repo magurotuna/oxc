@@ -1,5 +1,6 @@
 ---
 source: apps/oxlint/src/tester.rs
+assertion_line: 166
 ---
 ########## 
 arguments: --type-aware
@@ -14,8 +15,17 @@ working directory: fixtures/cli/type_aware_bom
    :   `-- This promise is not handled.
    `----
 
-Found 0 warnings and 1 error.
-Finished in <variable>ms on 1 file with 1 rules using 1 threads.
+  x typescript(consistent-type-exports): All exports in the declaration are only used as types.
+   ,-[type_exports_reported.ts:4:10]
+ 3 | const value = 1;
+ 4 | export { A, B, value };
+   :          |  |
+   :          |  `-- type
+   :          `-- type
+   `----
+
+Found 0 warnings and 2 errors.
+Finished in <variable>ms on 3 files with 2 rules using 1 threads.
 ----------
 CLI result: LintFoundErrors
 ----------
