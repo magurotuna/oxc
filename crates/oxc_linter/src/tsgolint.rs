@@ -1083,10 +1083,17 @@ pub struct TsGoLintRuleTiming {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TsGoLintNoticePayload {
     pub id: String,
+    /// The other fields. Their shape depends on `id`, so they are read only for known notices.
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The fields of the `content-mappers-require-run-external-code` notice.
+#[derive(Deserialize)]
+struct ContentMappersNoticeFields {
+    tsconfig: String,
     #[serde(default)]
-    pub tsconfig: Option<String>,
-    #[serde(default)]
-    pub extensions: Vec<String>,
+    extensions: Vec<String>,
 }
 
 /// A notice from the type-aware backend. Oxlint shows it separately from diagnostics. It does
@@ -1107,13 +1114,17 @@ impl TypeAwareNotice {
     const CONTENT_MAPPERS_REQUIRE_RUN_EXTERNAL_CODE: &str =
         "content-mappers-require-run-external-code";
 
-    /// Returns `None` for notices that this version of Oxlint does not know.
+    /// Returns `None` for notices that this version of Oxlint does not know, and for known notices
+    /// whose fields do not have the expected shape. A notice is only information for the user, so
+    /// such a notice is ignored and does not stop linting.
     fn from_payload(payload: TsGoLintNoticePayload) -> Option<Self> {
         match payload.id.as_str() {
             Self::CONTENT_MAPPERS_REQUIRE_RUN_EXTERNAL_CODE => {
+                let fields: ContentMappersNoticeFields =
+                    serde_json::from_value(serde_json::Value::Object(payload.fields)).ok()?;
                 Some(Self::ContentMappersRequireRunExternalCode {
-                    tsconfig: PathBuf::from(payload.tsconfig?),
-                    extensions: payload.extensions,
+                    tsconfig: PathBuf::from(fields.tsconfig),
+                    extensions: fields.extensions,
                 })
             }
             _ => None,
@@ -2195,14 +2206,21 @@ mod test {
     fn test_unknown_notice_is_ignored() {
         use super::{TsGoLintMessage, TypeAwareNotice, parse_single_message};
 
-        // A newer backend can send notices that this version of Oxlint does not know.
-        let bytes = notice_frame(&serde_json::json!({ "id": "some-future-notice", "data": 1 }));
-        let mut cursor = std::io::Cursor::new(bytes.as_slice());
-        let message = parse_single_message(&mut cursor).unwrap_or_else(|err| panic!("{err}"));
-        let TsGoLintMessage::Notice(payload) = message else {
-            panic!("expected notice message");
-        };
-        assert_eq!(TypeAwareNotice::from_payload(payload), None);
+        // A newer backend can send notices that this version of Oxlint does not know, with fields
+        // of any shape, also fields that have the name of a field of a known notice.
+        for notice in [
+            serde_json::json!({ "id": "some-future-notice", "data": 1 }),
+            serde_json::json!({ "id": "some-future-notice", "extensions": null, "tsconfig": 1 }),
+            serde_json::json!({ "id": "content-mappers-require-run-external-code", "extensions": null }),
+        ] {
+            let bytes = notice_frame(&notice);
+            let mut cursor = std::io::Cursor::new(bytes.as_slice());
+            let message = parse_single_message(&mut cursor).unwrap_or_else(|err| panic!("{err}"));
+            let TsGoLintMessage::Notice(payload) = message else {
+                panic!("expected notice message");
+            };
+            assert_eq!(TypeAwareNotice::from_payload(payload), None, "{notice}");
+        }
     }
 
     #[test]
