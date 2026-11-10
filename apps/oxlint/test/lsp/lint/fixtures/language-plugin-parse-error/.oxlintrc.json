@@ -1,0 +1,5 @@
+{
+  "languagePlugins": ["./language_plugin.ts"],
+  "categories": { "correctness": "off" },
+  "rules": { "no-debugger": "error" }
+}

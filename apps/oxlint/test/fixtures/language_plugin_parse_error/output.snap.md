@@ -26,6 +26,24 @@
    `----
   help: Remove the debugger statement
 
+  x Parsing error: Unexpected character
+   ,-[files/InsideEmoji.vue:2:6]
+ 1 | <template>
+ 2 |   <p>💩</p>
+   :      ^
+ 3 | </template>
+   `----
+  help: Language plugin `throwing` could not parse this file.
+
+  x eslint(no-debugger): `debugger` statement is not allowed
+   ,-[files/InsideEmoji.vue:5:1]
+ 4 | <script>
+ 5 | debugger;
+   : ^^^^^^^^^
+ 6 | </script>
+   `----
+  help: Remove the debugger statement
+
   x Parsing error: Unexpected token `)`
    ,-[files/LineColumn.vue:2:14]
  1 | <template>
@@ -75,8 +93,8 @@
    `----
   help: Remove the debugger statement
 
-Found 0 warnings and 9 errors.
-Finished in Xms on 5 files with 2 rules using X threads.
+Found 0 warnings and 11 errors.
+Finished in Xms on 6 files with 2 rules using X threads.
 ```
 
 # stderr

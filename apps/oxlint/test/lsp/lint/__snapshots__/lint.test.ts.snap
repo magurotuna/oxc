@@ -181,6 +181,23 @@ help: Remove the debugger statement
 --------------------"
 `;
 
+exports[`LSP linting > language plugins > should report a parse error at the start of a character 1`] = `
+"--- FILE -----------
+language-plugin-parse-error/test.js
+--- Diagnostics ---------
+  1 | export const text = "💩";
+> 2 | debugger;
+    | ^^^^^^^^^ Error: \`debugger\` statement is not allowed
+help: Remove the debugger statement
+  3 |
+--------------------> 1 | export const text = "💩";
+    |                      ^ Error: Parsing error: Unexpected character
+help: Language plugin \`inside-emoji\` could not parse this file.
+  2 | debugger;
+  3 |
+--------------------"
+`;
+
 exports[`LSP linting > nested config > should apply nested config 1`] = `
 "--- FILE -----------
 nested-config/test.js

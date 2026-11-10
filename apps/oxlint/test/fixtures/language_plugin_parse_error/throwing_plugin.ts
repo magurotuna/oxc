@@ -17,6 +17,13 @@ export default defineLanguagePlugin({
         column: 0,
       });
     }
+    // `index` between the two UTF-16 units of an emoji. Oxlint reports the start of the emoji.
+    const emojiIndex = sourceText.indexOf("<p>💩</p>");
+    if (emojiIndex !== -1) {
+      throw Object.assign(new SyntaxError("Unexpected character"), {
+        index: emojiIndex + "<p>".length + 1,
+      });
+    }
     const lines = sourceText.split("\n");
     const lineIndex = lines.findIndex((line) => line.includes("{{ ) }}"));
     if (lineIndex !== -1) {

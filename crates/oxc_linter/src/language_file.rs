@@ -26,6 +26,50 @@ const BOM: &str = "\u{feff}";
 #[expect(clippy::cast_possible_truncation)]
 const BOM_LEN: u32 = BOM.len() as u32;
 
+/// Converts UTF-16 ranges from JS to UTF-8 spans in the whole file.
+struct SpanConverter<'s> {
+    /// Source text of the whole file, with the BOM if the file has one.
+    source_text: &'s str,
+    /// Converter for the source text that JS gets, which has no BOM.
+    converter: Utf8ToUtf16,
+    /// Largest UTF-16 offset that JS can send.
+    max_utf16_offset: u32,
+}
+
+impl<'s> SpanConverter<'s> {
+    fn new(source_text: &'s str) -> Self {
+        let converter = match source_text.strip_prefix(BOM) {
+            Some(js_source_text) => Utf8ToUtf16::new_with_offset(js_source_text, BOM_LEN),
+            None => Utf8ToUtf16::new(source_text),
+        };
+        #[expect(clippy::cast_possible_truncation)]
+        let mut max_utf16_offset = source_text.len() as u32;
+        if let Some(mut converter) = converter.converter() {
+            converter.convert_offset(&mut max_utf16_offset);
+        }
+        Self { source_text, converter, max_utf16_offset }
+    }
+
+    /// Convert a UTF-16 range from JS to a UTF-8 span.
+    ///
+    /// JS can send any numbers, so:
+    /// - An offset after the end of the source text moves to the end.
+    /// - A reversed range becomes an empty span at its start.
+    /// - An offset between the two UTF-16 units of a character (for example, an emoji) moves to the
+    ///   start of the character. Other code, such as the language server, panics on an offset
+    ///   inside a character.
+    fn to_utf8_span(&self, start: u32, end: u32) -> Span {
+        let start = start.min(self.max_utf16_offset);
+        let end = end.min(self.max_utf16_offset).max(start);
+        let mut span = Span::new(start, end);
+        self.converter.convert_span_back(&mut span);
+        #[expect(clippy::cast_possible_truncation)]
+        let to_char_start =
+            |offset: u32| self.source_text.floor_char_boundary(offset as usize) as u32;
+        Span::new(to_char_start(span.start), to_char_start(span.end))
+    }
+}
+
 /// Result of linting a file with a language plugin. All spans are UTF-8 positions in the whole file.
 #[derive(Debug, Default)]
 pub struct LanguageFileResult {
@@ -123,24 +167,8 @@ impl Linter {
         // JS gets the source text without a BOM, as for other files
         let has_bom = source_text.starts_with(BOM);
         let js_source_text = if has_bom { &source_text[BOM_LEN as usize..] } else { source_text };
-        let span_converter = if has_bom {
-            Utf8ToUtf16::new_with_offset(js_source_text, BOM_LEN)
-        } else {
-            Utf8ToUtf16::new(js_source_text)
-        };
-        #[expect(clippy::cast_possible_truncation)]
-        let mut source_text_utf16_len = source_text.len() as u32;
-        if let Some(mut converter) = span_converter.converter() {
-            converter.convert_offset(&mut source_text_utf16_len);
-        }
-        let to_utf8_span = |start: u32, end: u32| {
-            // Clamp offsets to the end of the source, and represent reversed ranges as empty spans
-            let start = start.min(source_text_utf16_len);
-            let end = end.min(source_text_utf16_len).max(start);
-            let mut span = Span::new(start, end);
-            span_converter.convert_span_back(&mut span);
-            span
-        };
+        let span_converter = SpanConverter::new(source_text);
+        let to_utf8_span = |start: u32, end: u32| span_converter.to_utf8_span(start, end);
 
         let settings_json = match &config.settings.json {
             Some(json) => serde_json::to_string(json).unwrap_or_else(|e| {
@@ -226,7 +254,7 @@ impl Linter {
             let mut create_fix = |fixes, fix_kind: FixKind| match convert_and_merge_js_fixes(
                 fixes,
                 source_text,
-                &span_converter,
+                &span_converter.converter,
                 has_bom,
             ) {
                 Ok(fix) => Some(fix.with_kind(fix_kind)),
@@ -304,7 +332,7 @@ impl Linter {
 mod tests {
     use oxc_span::Span;
 
-    use super::LanguageFileResult;
+    use super::{LanguageFileResult, SpanConverter};
     use crate::external_linter::MarkupComment;
 
     #[expect(clippy::cast_possible_truncation)]
@@ -361,6 +389,31 @@ mod tests {
         };
         let directives = result.markup_directives(source_text, true).unwrap();
         assert!(!directives.contains("no-debugger", span_of(source_text, "debugger;")));
+    }
+
+    #[test]
+    #[expect(clippy::cast_possible_truncation)]
+    fn a_utf16_offset_inside_a_character_is_moved_to_its_start() {
+        // Before, the span had a UTF-8 offset inside the emoji, and the language server panicked
+        for source_text in ["<template>💩</template>\n", "\u{feff}<template>💩</template>\n"] {
+            let converter = SpanConverter::new(source_text);
+            let emoji_start = source_text.find('💩').unwrap() as u32;
+            // UTF-16 offsets that JS sends are positions in the text without the BOM
+            let utf16_emoji_start = "<template>".len() as u32;
+            assert_eq!(
+                converter.to_utf8_span(utf16_emoji_start + 1, utf16_emoji_start + 1),
+                Span::empty(emoji_start),
+            );
+            assert_eq!(
+                converter.to_utf8_span(utf16_emoji_start, utf16_emoji_start + 1),
+                Span::empty(emoji_start),
+            );
+            // A whole emoji is 2 UTF-16 units and 4 UTF-8 bytes
+            assert_eq!(
+                converter.to_utf8_span(utf16_emoji_start, utf16_emoji_start + 2),
+                Span::sized(emoji_start, 4),
+            );
+        }
     }
 
     #[test]

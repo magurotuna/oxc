@@ -44,6 +44,15 @@ describe("LSP linting", () => {
     });
   });
 
+  describe("language plugins", () => {
+    it("should report a parse error at the start of a character", async () => {
+      // The plugin gives a position inside an emoji. Before, the server panicked.
+      expect(
+        await lintFixture(FIXTURES_DIR, "language-plugin-parse-error/test.js", "javascript"),
+      ).toMatchSnapshot();
+    });
+  });
+
   describe("nested config", () => {
     it("should apply nested config", async () => {
       expect(
