@@ -281,12 +281,71 @@ export function lintLanguageFile(
   } catch (err) {
     const timingOutput =
       timings === null ? undefined : { rules: timings, runtimeMs: performance.now() - start };
-    const message = getErrorMessage(err);
 
     resetStateAfterError();
 
-    return JSON.stringify({ Failure: { message, timings: timingOutput } });
+    // A syntax error in the file is a report, not a failure of the plugin
+    if (err instanceof LanguageParseError) {
+      const { message, offset } = err;
+      return JSON.stringify({
+        Success: {
+          diagnostics: [],
+          markupReferences: null,
+          markupComments: [],
+          parseError: { message, offset },
+          timings: timingOutput,
+        },
+      });
+    }
+
+    return JSON.stringify({ Failure: { message: getErrorMessage(err), timings: timingOutput } });
   }
+}
+
+/**
+ * A syntax error that `parse` of a language plugin threw, with its position.
+ */
+class LanguageParseError extends Error {
+  /** UTF-16 offset in the source text (without a BOM) */
+  offset: number;
+
+  constructor(message: string, offset: number) {
+    super(message);
+    this.offset = offset;
+  }
+}
+
+/**
+ * Get the position of an error that a parser threw, as a UTF-16 offset in `sourceText`.
+ *
+ * ESLint parsers set `lineNumber` and `column` on syntax errors, and most of them also set `index`.
+ * `index` is exact. ESLint reports `lineNumber` and `column`, with `column` 1-based.
+ *
+ * @returns Offset, or `null` if the error has no position (then it is a failure of the plugin)
+ */
+function getParseErrorOffset(err: unknown, sourceText: string): number | null {
+  if (err === null || typeof err !== "object") return null;
+  const { index, lineNumber, column } = err as Record<string, unknown>;
+  if (typeof index === "number" && Number.isInteger(index) && index >= 0) {
+    return Math.min(index, sourceText.length);
+  }
+  if (
+    typeof lineNumber !== "number"
+    || !Number.isInteger(lineNumber)
+    || lineNumber < 1
+    || typeof column !== "number"
+    || !Number.isInteger(column)
+  ) {
+    return null;
+  }
+  let lineStart = 0;
+  const lineBreaks = /\r\n|[\r\n\u2028\u2029]/g;
+  for (let line = 1; line < lineNumber; line++) {
+    const lineBreak = lineBreaks.exec(sourceText);
+    if (lineBreak === null) return sourceText.length;
+    lineStart = lineBreak.index + lineBreak[0].length;
+  }
+  return Math.min(lineStart + Math.max(column - 1, 0), sourceText.length);
 }
 
 /**
@@ -426,7 +485,16 @@ function parseAndLoad(
   sourceText: string,
   options: Record<string, unknown>,
 ): LoadedLanguageFile {
-  const parseResult: unknown = plugin.parse(filePath, sourceText, options);
+  let parseResult: unknown;
+  try {
+    parseResult = plugin.parse(filePath, sourceText, options);
+  } catch (err) {
+    const offset = getParseErrorOffset(err, sourceText);
+    if (offset === null) throw err;
+    // The message without the stack: the error is in the file, not in the plugin
+    const { message } = err as { message?: unknown };
+    throw new LanguageParseError(typeof message === "string" ? message : "Unknown error", offset);
+  }
   if (isPromise(parseResult)) {
     throw new TypeError(`\`parse\` of language plugin \`${pluginName}\` must not return a Promise`);
   }

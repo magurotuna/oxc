@@ -144,6 +144,18 @@ pub struct LintLanguageFileOutput {
     /// Comments in the markup.
     #[serde(default)]
     pub markup_comments: Vec<MarkupComment>,
+    /// The syntax error that `parse` of the plugin threw, if it has a position.
+    /// Then no rule ran, and the other fields are empty.
+    #[serde(default)]
+    pub parse_error: Option<LanguageParseError>,
+}
+
+/// A syntax error in a file of a language plugin.
+#[derive(Clone, Debug, Deserialize)]
+pub struct LanguageParseError {
+    pub message: String,
+    /// UTF-16 offset in the whole file.
+    pub offset: u32,
 }
 
 /// A reference from the markup of a file to a top-level variable of its script.

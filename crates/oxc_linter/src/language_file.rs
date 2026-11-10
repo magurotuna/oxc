@@ -171,21 +171,41 @@ impl Linter {
             workspace_uri: self.workspace_uri.as_ref().map(ToString::to_string),
         });
 
-        let LintLanguageFileOutput { diagnostics, timings, markup_references, markup_comments } =
-            match output {
-                Ok(output) => output,
-                Err(LintFileFailure { message, timings }) => {
-                    self.record_external_timings(rule_timing_store, external_rules, timings);
-                    push_error(
-                        &mut result,
-                        format!(
-                            "Error running language plugin `{plugin_name}`.\nFile path: {path_string}\n{message}"
-                        ),
-                    );
-                    return Some(result);
-                }
-            };
+        let LintLanguageFileOutput {
+            diagnostics,
+            timings,
+            markup_references,
+            markup_comments,
+            parse_error,
+        } = match output {
+            Ok(output) => output,
+            Err(LintFileFailure { message, timings }) => {
+                self.record_external_timings(rule_timing_store, external_rules, timings);
+                push_error(
+                    &mut result,
+                    format!(
+                        "Error running language plugin `{plugin_name}`.\nFile path: {path_string}\n{message}"
+                    ),
+                );
+                return Some(result);
+            }
+        };
         self.record_external_timings(rule_timing_store, external_rules, timings);
+
+        if let Some(parse_error) = parse_error {
+            let span = to_utf8_span(parse_error.offset, parse_error.offset);
+            result.diagnostics.push((
+                Message::new(
+                    OxcDiagnostic::error(format!("Parsing error: {}", parse_error.message))
+                        .with_label(span)
+                        .with_help(format!(
+                            "Language plugin `{plugin_name}` could not parse this file."
+                        )),
+                    PossibleFixes::None,
+                ),
+                None,
+            ));
+        }
 
         for diagnostic in diagnostics {
             let Some(&(external_rule_id, _options_id, severity)) =
