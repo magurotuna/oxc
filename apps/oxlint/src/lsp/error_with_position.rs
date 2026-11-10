@@ -259,6 +259,8 @@ pub fn create_unused_directives_report(
     let unused_disable = directives.collect_unused_disable_comments();
     for unused_comment in unused_disable {
         let span = unused_comment.span;
+        // Comments in markup (such as `<!-- eslint-disable -->`) get no fix
+        let fixable = unused_comment.fixable;
         match unused_comment.r#type {
             RuleCommentType::All => {
                 reports.push(build_unused_disable_diagnostic_report(
@@ -266,7 +268,8 @@ pub fn create_unused_directives_report(
                     span,
                     severity,
                     source_text,
-                    Some(unused_comment.create_fix(source_text).with_message(fix_message)),
+                    fixable
+                        .then(|| unused_comment.create_fix(source_text).with_message(fix_message)),
                 ));
             }
             RuleCommentType::Single(rules) => {
@@ -276,7 +279,8 @@ pub fn create_unused_directives_report(
                         rule.name_span,
                         severity,
                         source_text,
-                        Some(rule.create_fix(source_text, span).with_message(fix_message)),
+                        fixable
+                            .then(|| rule.create_fix(source_text, span).with_message(fix_message)),
                     ));
                 }
             }

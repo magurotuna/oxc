@@ -55,6 +55,18 @@ describe("LSP code actions", () => {
     });
   });
 
+  describe("unused disable directives", () => {
+    it("should not remove unused directives in markup", async () => {
+      // Only the `// eslint-disable-next-line` comment gets the "remove" fix. Removing the HTML comment
+      // would change the string.
+      expect(
+        await fixFixture(FIXTURES_DIR, "language-plugin-markup/test.js", "javascript", {
+          unusedDisableDirectives: "warn",
+        }),
+      ).toMatchSnapshot();
+    });
+  });
+
   describe("rulesCustomization", () => {
     it("should hide rule fix in `source.fixAll.oxc` when rulesCustomization disables this rule", async () => {
       expect(

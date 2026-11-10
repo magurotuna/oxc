@@ -213,6 +213,29 @@ debugger;
 --------------------"
 `;
 
+exports[`LSP code actions > unused disable directives > should not remove unused directives in markup 1`] = `
+"--- FILE -----------
+language-plugin-markup/test.js
+--- Original Content ---------
+// eslint-disable-next-line no-debugger
+export const html = \`
+  <!-- eslint-disable-next-line no-debugger -->
+  <p>x</p>
+\`;
+
+--- Code Actions ---------
+
+Title : remove unused disable directive
+Preferred: Yes
+Resulting Content:
+export const html = \`
+  <!-- eslint-disable-next-line no-debugger -->
+  <p>x</p>
+\`;
+
+--------------------"
+`;
+
 exports[`LSP code actions > with code action only context > should handle quickfix 1`] = `
 "--- FILE -----------
 context_only/test.ts

@@ -450,6 +450,7 @@ type OxlintLSPConfig = {
   fixKind?: string;
   configPath?: string;
   typeAware?: boolean;
+  unusedDisableDirectives?: "allow" | "warn" | "deny";
   rulesCustomization?: Record<
     string,
     {
