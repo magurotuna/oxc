@@ -323,10 +323,14 @@ impl Linter {
         context_sub_hosts: Vec<ContextSubHost<'a>>,
         allocator: &'a Allocator,
     ) -> Vec<Message> {
-        self.run_with_disable_directives::<false>(path, context_sub_hosts, allocator, None, None).0
+        self.run_impl::<false>(path, context_sub_hosts, allocator, None, None, false).0
     }
 
     /// Same as `run` but also returns the disable directives for the file
+    ///
+    /// For files with more than one section (Vue, Svelte, and Astro files), the returned
+    /// directives have spans in the whole file, and this function does not report unused
+    /// directives. The caller reports them, after type-aware linting has used the directives.
     ///
     /// # Parameters
     /// - `js_allocator_pool`: Optional pool of fixed-size allocators for copying AST before JS transfer.
@@ -342,6 +346,27 @@ impl Linter {
         allocator: &'a Allocator,
         js_allocator_pool: Option<&AllocatorPool>,
         rule_timing_store: Option<&RuleTimingStore>,
+    ) -> (Vec<Message>, Option<DisableDirectives>) {
+        self.run_impl::<TIMINGS>(
+            path,
+            context_sub_hosts,
+            allocator,
+            js_allocator_pool,
+            rule_timing_store,
+            true,
+        )
+    }
+
+    /// If `return_directives` is `false`, unused directives in files with more than one section
+    /// are reported here, and no directives are returned for those files.
+    fn run_impl<'a, const TIMINGS: bool>(
+        &self,
+        path: &Path,
+        context_sub_hosts: Vec<ContextSubHost<'a>>,
+        allocator: &'a Allocator,
+        js_allocator_pool: Option<&AllocatorPool>,
+        rule_timing_store: Option<&RuleTimingStore>,
+        return_directives: bool,
     ) -> (Vec<Message>, Option<DisableDirectives>) {
         let ResolvedLinterState { rules, config, external_rules } = self.config.resolve(path);
         let mut timing_recorder = TIMINGS.then(|| RuleTimingRecorder::with_capacity(rules.len()));
@@ -491,11 +516,12 @@ impl Linter {
         }
 
         // Pass 3: Report unused enable/disable directives for every sub host.
-        // Reporting unused directives is handled differently with type-aware linting,
-        // so this only applies to partial loader files (Vue/Astro/Svelte).
+        // For other files, and for partial loader files (Vue/Astro/Svelte) whose directives are
+        // returned, the caller reports unused directives after type-aware linting.
         if let Some(severity) = self.options.report_unused_directive
             && severity.is_warn_deny()
             && is_partial_loader_file
+            && !return_directives
         {
             ctx_host.rewind_sub_hosts();
             loop {
@@ -508,8 +534,10 @@ impl Linter {
         }
 
         let diagnostics = ctx_host.take_diagnostics();
-        let disable_directives = if is_partial_loader_file {
+        let disable_directives = if !return_directives {
             None
+        } else if is_partial_loader_file {
+            Some(Rc::try_unwrap(ctx_host).unwrap().into_merged_disable_directives())
         } else {
             Rc::try_unwrap(ctx_host).unwrap().into_disable_directives()
         };

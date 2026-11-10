@@ -190,6 +190,21 @@ impl DisabledRule {
             | DisabledRule::Single { directive_prefix, .. } => *directive_prefix,
         }
     }
+
+    /// Moves all spans of this rule by `offset` bytes.
+    fn move_offset(&mut self, offset: u32) {
+        match self {
+            DisabledRule::All { comment_span, fix_span, .. } => {
+                *comment_span = comment_span.move_right(offset);
+                *fix_span = fix_span.move_right(offset);
+            }
+            DisabledRule::Single { name_span, comment_span, fix_span, .. } => {
+                *name_span = name_span.move_right(offset);
+                *comment_span = comment_span.move_right(offset);
+                *fix_span = fix_span.move_right(offset);
+            }
+        }
+    }
 }
 
 /// Represents a single rule within a disable/enable comment directive.
@@ -359,6 +374,64 @@ impl DisableDirectives {
     /// Whether `source_text` is the recorded source these directives were built from.
     pub fn matches_source(&self, source_text: &str) -> bool {
         self.source_hash == Some(FxBuildHasher.hash_one(source_text))
+    }
+
+    /// Merges the directives of the sections of one file (for example, the `<script>` blocks
+    /// of a Vue file) into one table whose spans are positions in the whole file.
+    ///
+    /// Each item gives the directives of one section and the offset of the section in the file.
+    /// Each interval stays in its own section, so a directive in one `<script>` block does not
+    /// apply to other parts of the file. The directives that are already marked as used stay
+    /// marked as used.
+    pub fn merge_sections(sections: impl IntoIterator<Item = (DisableDirectives, u32)>) -> Self {
+        let mut intervals = vec![];
+        let mut disable_rule_comments = vec![];
+        let mut unused_enable_comments = vec![];
+        let mut used_disable_comments = vec![];
+
+        for (directives, offset) in sections {
+            for interval in directives.intervals.iter() {
+                let mut val = interval.val.clone();
+                val.move_offset(offset);
+                intervals.push(Interval {
+                    start: interval.start + offset,
+                    stop: interval.stop + offset,
+                    val,
+                });
+            }
+            disable_rule_comments.extend(directives.disable_rule_comments.into_iter().map(
+                |mut comment| {
+                    comment.span = comment.span.move_right(offset);
+                    comment.fix_span = comment.fix_span.move_right(offset);
+                    if let RuleCommentType::Single(rules) = &mut comment.r#type {
+                        for rule in rules {
+                            rule.name_span = rule.name_span.move_right(offset);
+                        }
+                    }
+                    comment
+                },
+            ));
+            unused_enable_comments.extend(
+                directives
+                    .unused_enable_comments
+                    .into_iter()
+                    .map(|(prefix, rule, span)| (prefix, rule, span.move_right(offset))),
+            );
+            used_disable_comments.extend(
+                directives.used_disable_comments.into_inner().into_iter().map(|mut rule| {
+                    rule.move_offset(offset);
+                    rule
+                }),
+            );
+        }
+
+        DisableDirectives {
+            intervals: Lapper::new(intervals),
+            disable_rule_comments: disable_rule_comments.into_boxed_slice(),
+            unused_enable_comments: unused_enable_comments.into_boxed_slice(),
+            used_disable_comments: RefCell::new(used_disable_comments),
+            source_hash: None,
+        }
     }
 
     fn mark_disable_directive_used(&self, disable_directive: DisabledRule) {
@@ -1491,6 +1564,7 @@ pub fn create_unused_directives_messages(
 
 #[cfg(test)]
 mod tests {
+    use cow_utils::CowUtils;
     use oxc_allocator::Allocator;
     use oxc_ast::Comment;
     use oxc_diagnostics::OxcDiagnostic;
@@ -1536,6 +1610,60 @@ mod tests {
                 assert_eq!(result.messages, []);
             }
         }
+    }
+
+    #[test]
+    #[expect(clippy::cast_possible_truncation)]
+    fn merge_sections_uses_positions_in_the_whole_file() {
+        // Two `<script>` blocks of a Vue file.
+        let first = "\n// eslint-disable-next-line no-debugger\ndebugger;\n";
+        let second = "\n/* eslint-disable no-console, no-alert */\nconsole.log();\n";
+        let file = format!("<script>{first}</script>\n<script setup>{second}</script>\n");
+        let first_offset = file.find(first).unwrap() as u32;
+        let second_offset = file.find(second).unwrap() as u32;
+
+        let allocator = Allocator::default();
+        let first_semantic = process_source(&allocator, first);
+        let first_directives =
+            DisableDirectivesBuilder::new().build(first, first_semantic.comments());
+        let second_semantic = process_source(&allocator, second);
+        let second_directives =
+            DisableDirectivesBuilder::new().build(second, second_semantic.comments());
+
+        // A rule on the first section uses its directive, with a position in the section.
+        let debugger = first.find("debugger;").unwrap() as u32;
+        assert!(first_directives.contains("no-debugger", Span::new(debugger, debugger + 8)));
+
+        let merged = DisableDirectives::merge_sections([
+            (first_directives, first_offset),
+            (second_directives, second_offset),
+        ]);
+
+        // A type-aware report at the position of `console.log()` in the whole file is suppressed.
+        let console = file.find("console.log()").unwrap() as u32;
+        assert!(merged.contains("no-console", Span::new(console, console + 13)));
+        // The directive does not apply after the end of its section.
+        let section_end = second_offset + second.len() as u32;
+        assert!(!merged.contains("no-console", Span::new(section_end, section_end + 1)));
+
+        // The used directive of the first section stays used, so only `no-alert` is unused.
+        let unused = merged.collect_unused_disable_comments();
+        assert_eq!(unused.len(), 1);
+        let comment = "/* eslint-disable no-console, no-alert */";
+        let comment_start = file.find(comment).unwrap() as u32;
+        assert_eq!(unused[0].span, Span::new(comment_start, comment_start + comment.len() as u32));
+        let RuleCommentType::Single(rules) = &unused[0].r#type else {
+            panic!("expected one unused rule, got {:?}", unused[0].r#type);
+        };
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule_name, "no-alert");
+
+        // The fix removes the rule name from the whole file.
+        let fix = rules[0].create_fix(&file, unused[0].span);
+        let messages =
+            vec![Message::new(OxcDiagnostic::warn("Unused directive"), PossibleFixes::Single(fix))];
+        let result = Fixer::new(&file, messages, None).fix();
+        assert_eq!(result.fixed_code, file.cow_replace(", no-alert", ""));
     }
 
     /// Replicates the `compute_comment_fix_span` logic for use in tests.

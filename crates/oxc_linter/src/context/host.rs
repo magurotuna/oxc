@@ -424,6 +424,18 @@ impl<'a> ContextHost<'a> {
         self.sub_hosts.into_iter().next().map(|sub_host| sub_host.disable_directives)
     }
 
+    /// Take ownership of the disable directives of all sub hosts, merged into one table whose
+    /// spans are positions in the whole file. This consumes the `ContextHost`.
+    ///
+    /// Use this for files with more than one section, such as Vue, Svelte, and Astro files.
+    pub fn into_merged_disable_directives(self) -> DisableDirectives {
+        DisableDirectives::merge_sections(
+            self.sub_hosts
+                .into_iter()
+                .map(|sub_host| (sub_host.disable_directives, sub_host.source_text_offset)),
+        )
+    }
+
     #[cfg(debug_assertions)]
     pub fn get_diagnostics(&self, cb: impl FnOnce(&mut Vec<Message>)) {
         cb(self.diagnostics.borrow_mut().as_mut());
