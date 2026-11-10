@@ -36,6 +36,32 @@ export type ExternalPluginEntry =
        */
       specifier: string;
     };
+export type LanguagePluginEntry =
+  | string
+  | {
+      /**
+       * Package name or path of the language plugin.
+       *
+       * If you also set `specifier`, then `name` is a custom name for the plugin at `specifier`.
+       */
+      name: string;
+      /**
+       * Options passed to the `parse` and `load` functions of the plugin.
+       */
+      options?: {
+        [k: string]: unknown | undefined;
+      };
+      /**
+       * Glob patterns of the files that this plugin parses, relative to the directory of the config file.
+       *
+       * If you do not set `pattern`, the plugin parses the files in its `defaultFiles` list.
+       */
+      pattern?: string | string[];
+      /**
+       * Path or package name of the language plugin
+       */
+      specifier?: string;
+    };
 /**
  * A set of glob patterns.
  * Patterns are matched against paths relative to the configuration file's directory.
@@ -634,6 +660,32 @@ export interface Oxlintrc {
    * ```
    */
   jsPlugins?: null | ExternalPluginEntry[];
+  /**
+   * Language plugins, which parse files of other languages, such as Vue single-file
+   * components, so that JS plugin rules can lint the whole file.
+   *
+   * Each entry is a package name or a path, or an object with `name` and optional
+   * `specifier`, `pattern`, and `options`. A plugin parses the files that match its
+   * `pattern`. If you do not set `pattern`, the plugin parses the files in its
+   * `defaultFiles` list. Each file can match only one language plugin.
+   *
+   * Note: Language plugins are experimental and not subject to semver.
+   *
+   * Example:
+   *
+   * ```json
+   * {
+   *   "languagePlugins": [
+   *     "vue-language-plugin",
+   *     {
+   *       "name": "svelte-language-plugin",
+   *       "pattern": "src/** /*.svelte"
+   *     }
+   *   ]
+   * }
+   * ```
+   */
+  languagePlugins?: null | LanguagePluginEntry[];
   /**
    * Oxlint config options.
    */

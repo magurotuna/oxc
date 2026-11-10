@@ -73,6 +73,54 @@ pub type JsLintFileCb = ThreadsafeFunction<
     false,
 >;
 
+/// JS callback to load a language plugin.
+#[napi]
+pub type JsLoadLanguagePluginCb = ThreadsafeFunction<
+    // Arguments
+    FnArgs<(
+        // File URL to load the language plugin from
+        String,
+        // Alias from the config, or `None`
+        Option<String>,
+        // Workspace URI (`None` in CLI mode, `Some` in LSP mode)
+        Option<String>,
+    )>,
+    // Return value
+    Promise<String>, // `LoadLanguagePluginResult`, serialized to JSON
+    // Arguments (repeated)
+    FnArgs<(String, Option<String>, Option<String>)>,
+    // Error status
+    Status,
+    // CalleeHandled
+    false,
+>;
+
+/// JS callback to lint a file with a language plugin.
+#[napi]
+pub type JsLintLanguageFileCb = ThreadsafeFunction<
+    // Arguments
+    FnArgs<(
+        String,         // Absolute path of file to lint
+        u32,            // Language plugin ID
+        String,         // Options of the language plugin entry, as JSON string
+        String,         // Source text of the file
+        Vec<u32>,       // Array of rule IDs
+        Vec<u32>,       // Array of options IDs
+        String,         // Settings for the file, as JSON string
+        String,         // Globals for the file, as JSON string
+        bool,           // Whether to collect per-rule timing information
+        Option<String>, // Workspace URI (`None` in CLI mode, `Some` in LSP mode)
+    )>,
+    // Return value
+    String, // Success or failure payload serialized to JSON
+    // Arguments (repeated)
+    FnArgs<(String, u32, String, String, Vec<u32>, Vec<u32>, String, String, bool, Option<String>)>,
+    // Error status
+    Status,
+    // CalleeHandled
+    false,
+>;
+
 /// JS callback to setup configs.
 #[napi]
 pub type JsSetupRuleConfigsCb = ThreadsafeFunction<
@@ -143,6 +191,8 @@ pub type JsLoadJsConfigsCb = ThreadsafeFunction<
 /// 5. `create_workspace`: Create a workspace.
 /// 6. `destroy_workspace`: Destroy a workspace.
 /// 7. `load_js_configs`: Load JavaScript config files.
+/// 8. `load_language_plugin`: Load a language plugin from a file path.
+/// 9. `lint_language_file`: Lint a file with a language plugin.
 ///
 /// Returns `true` if linting succeeded without errors, `false` otherwise.
 #[expect(clippy::allow_attributes)]
@@ -156,31 +206,52 @@ pub async fn lint(
     create_workspace: JsCreateWorkspaceCb,
     destroy_workspace: JsDestroyWorkspaceCb,
     load_js_configs: JsLoadJsConfigsCb,
+    load_language_plugin: JsLoadLanguagePluginCb,
+    lint_language_file: JsLintLanguageFileCb,
 ) -> bool {
     lint_impl(
         args,
-        load_plugin,
-        setup_rule_configs,
-        lint_file,
-        create_workspace,
-        destroy_workspace,
-        load_js_configs,
+        JsCallbacks {
+            load_plugin,
+            setup_rule_configs,
+            lint_file,
+            create_workspace,
+            destroy_workspace,
+            load_js_configs,
+            load_language_plugin,
+            lint_language_file,
+        },
     )
     .await
     .report()
         == ExitCode::SUCCESS
 }
 
-/// Run the linter.
-async fn lint_impl(
-    args: Vec<String>,
+/// JS callbacks passed to [`lint`].
+struct JsCallbacks {
     load_plugin: JsLoadPluginCb,
     setup_rule_configs: JsSetupRuleConfigsCb,
     lint_file: JsLintFileCb,
     create_workspace: JsCreateWorkspaceCb,
     destroy_workspace: JsDestroyWorkspaceCb,
     load_js_configs: JsLoadJsConfigsCb,
-) -> CliRunResult {
+    load_language_plugin: JsLoadLanguagePluginCb,
+    lint_language_file: JsLintLanguageFileCb,
+}
+
+/// Run the linter.
+async fn lint_impl(args: Vec<String>, callbacks: JsCallbacks) -> CliRunResult {
+    let JsCallbacks {
+        load_plugin,
+        setup_rule_configs,
+        lint_file,
+        create_workspace,
+        destroy_workspace,
+        load_js_configs,
+        load_language_plugin,
+        lint_language_file,
+    } = callbacks;
+
     // Convert String args to OsString for compatibility with bpaf
     let args: Vec<std::ffi::OsString> = args.into_iter().map(std::ffi::OsString::from).collect();
 
@@ -212,18 +283,22 @@ async fn lint_impl(
             lint_file,
             create_workspace,
             destroy_workspace,
+            load_language_plugin,
+            lint_language_file,
         ));
         (external_linter, js_config_loader)
     };
     #[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
     let (external_linter, js_config_loader) = {
-        let (_, _, _, _, _, _) = (
+        let (_, _, _, _, _, _, _, _) = (
             load_plugin,
             setup_rule_configs,
             lint_file,
             create_workspace,
             destroy_workspace,
             load_js_configs,
+            load_language_plugin,
+            lint_language_file,
         );
         (None, None)
     };

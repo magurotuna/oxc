@@ -66,6 +66,122 @@ pub type ExternalLinterLintFileCb = Arc<
     >,
 >;
 
+pub type ExternalLinterLoadLanguagePluginCb = Arc<
+    Box<
+        dyn Fn(
+                // File URL to load the language plugin from
+                String,
+                // Alias from the config, or `None`
+                Option<String>,
+                // Workspace URI (e.g. `file:///path/to/workspace`).
+                // `None` in CLI mode (single workspace), `Some` in LSP mode.
+                Option<String>,
+            ) -> Result<LoadLanguagePluginResult, String>
+            + Send
+            + Sync,
+    >,
+>;
+
+/// Arguments of the `lintLanguageFile` JS callback.
+#[derive(Debug)]
+pub struct LintLanguageFileArgs {
+    /// Absolute path of the file.
+    pub file_path: String,
+    /// ID of the language plugin that parses the file.
+    pub plugin_id: u32,
+    /// Options of the language plugin entry, as JSON.
+    pub plugin_options_json: Arc<str>,
+    /// Source text of the whole file.
+    pub source_text: String,
+    /// Rule IDs of the JS plugin rules to run.
+    pub rule_ids: Vec<u32>,
+    /// Options IDs, in the same order as `rule_ids`.
+    pub options_ids: Vec<u32>,
+    /// Settings, as JSON.
+    pub settings_json: String,
+    /// Globals and envs, as JSON.
+    pub globals_json: String,
+    /// Whether to collect per-rule timing information.
+    pub collect_timings: bool,
+    /// Workspace URI. `None` in CLI mode.
+    pub workspace_uri: Option<String>,
+}
+
+pub type ExternalLinterLintLanguageFileCb = Arc<
+    Box<
+        dyn Fn(LintLanguageFileArgs) -> Result<LintLanguageFileOutput, LintFileFailure>
+            + Send
+            + Sync,
+    >,
+>;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadLanguagePluginResult {
+    /// ID that JS gave the plugin. IDs start at 0 and increase by 1.
+    pub id: u32,
+    /// Name of the plugin.
+    pub name: String,
+    /// The `defaultFiles` list of the plugin.
+    pub default_files: Vec<String>,
+}
+
+/// Result of linting a file with a language plugin.
+///
+/// Offsets are UTF-16 offsets in the whole file.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LintLanguageFileOutput {
+    /// Reports of the JS plugin rules.
+    pub diagnostics: Vec<LintFileResult>,
+    pub timings: Option<LintFileTimings>,
+    /// References from the markup to top-level script variables.
+    #[serde(default)]
+    pub markup_references: Vec<MarkupReference>,
+    /// Comments in the markup.
+    #[serde(default)]
+    pub markup_comments: Vec<MarkupComment>,
+}
+
+/// A reference from the markup of a file to a top-level variable of its script.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkupReference {
+    /// Name of the variable.
+    pub name: String,
+    /// How the markup uses the variable.
+    pub kind: MarkupReferenceKind,
+    /// Start of the reference (UTF-16 offset).
+    pub start: u32,
+    /// End of the reference (UTF-16 offset).
+    pub end: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarkupReferenceKind {
+    Read,
+    Write,
+    ReadWrite,
+    Type,
+}
+
+/// A comment in the markup of a file, such as `<!-- eslint-disable-next-line -->`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkupComment {
+    /// Start of the whole comment, including its delimiters (UTF-16 offset).
+    pub start: u32,
+    /// End of the whole comment, including its delimiters (UTF-16 offset).
+    pub end: u32,
+    /// Text of the comment, without its delimiters.
+    pub text: String,
+    /// Offset where a block directive (`eslint-disable` without `-line`) in this comment stops
+    /// applying (UTF-16 offset). If `None`, it applies until the end of the file, or until a
+    /// matching `eslint-enable` comment.
+    pub scope_end: Option<u32>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadPluginResult {
@@ -289,6 +405,16 @@ pub struct ExternalLinter {
     pub(crate) lint_file: ExternalLinterLintFileCb,
     pub create_workspace: ExternalLinterCreateWorkspaceCb,
     pub destroy_workspace: ExternalLinterDestroyWorkspaceCb,
+    /// Callbacks for language plugins. `None` if the host does not support language plugins.
+    pub(crate) language_plugins: Option<ExternalLanguagePluginCbs>,
+}
+
+/// Callbacks for language plugins.
+#[derive(Clone)]
+pub struct ExternalLanguagePluginCbs {
+    pub(crate) load_language_plugin: ExternalLinterLoadLanguagePluginCb,
+    #[expect(dead_code, reason = "files are not linted with language plugins yet")]
+    pub(crate) lint_language_file: ExternalLinterLintLanguageFileCb,
 }
 
 impl ExternalLinter {
@@ -299,7 +425,26 @@ impl ExternalLinter {
         create_workspace: ExternalLinterCreateWorkspaceCb,
         destroy_workspace: ExternalLinterDestroyWorkspaceCb,
     ) -> Self {
-        Self { load_plugin, setup_rule_configs, lint_file, create_workspace, destroy_workspace }
+        Self {
+            load_plugin,
+            setup_rule_configs,
+            lint_file,
+            create_workspace,
+            destroy_workspace,
+            language_plugins: None,
+        }
+    }
+
+    /// Add the callbacks for language plugins.
+    #[must_use]
+    pub fn with_language_plugins(
+        mut self,
+        load_language_plugin: ExternalLinterLoadLanguagePluginCb,
+        lint_language_file: ExternalLinterLintLanguageFileCb,
+    ) -> Self {
+        self.language_plugins =
+            Some(ExternalLanguagePluginCbs { load_language_plugin, lint_language_file });
+        self
     }
 }
 

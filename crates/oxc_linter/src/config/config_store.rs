@@ -7,7 +7,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     AllowWarnDeny,
-    external_plugin_store::{ExternalOptionsId, ExternalPluginStore, ExternalRuleId},
+    external_plugin_store::{
+        ExternalOptionsId, ExternalPluginStore, ExternalRuleId, LanguagePluginId,
+    },
     rules::{RULES, RuleEnum},
 };
 
@@ -58,6 +60,46 @@ pub struct ResolvedOxlintOverrideRules {
     pub(crate) external_rules: Vec<(ExternalRuleId, ExternalOptionsId, AllowWarnDeny)>,
 }
 
+/// A `languagePlugins` entry of a config, with the ID of its loaded plugin.
+#[derive(Debug, Clone)]
+pub struct LanguagePluginBinding {
+    pub(crate) plugin_id: LanguagePluginId,
+    /// Directory that `pattern` is relative to: the directory of the config file.
+    pub(crate) base_dir: PathBuf,
+    /// Files that the plugin parses. If `None`, the plugin's `defaultFiles` are used.
+    pub(crate) pattern: Option<GlobSet>,
+    /// Options of the entry, as JSON.
+    pub(crate) options_json: Arc<str>,
+}
+
+impl LanguagePluginBinding {
+    fn matches(&self, path: &Path, external_plugin_store: &ExternalPluginStore) -> bool {
+        match &self.pattern {
+            Some(pattern) => {
+                let relative_path = path.strip_prefix(&self.base_dir).unwrap_or(path);
+                pattern.is_match(relative_path.to_string_lossy().as_ref())
+            }
+            None => path.file_name().is_some_and(|file_name| {
+                external_plugin_store
+                    .language_plugin(self.plugin_id)
+                    .default_files
+                    .matches(file_name.to_string_lossy().as_ref())
+            }),
+        }
+    }
+}
+
+/// The language plugin that parses a file.
+#[derive(Debug)]
+pub enum LanguagePluginMatch<'c> {
+    /// No language plugin parses the file.
+    None,
+    /// One language plugin entry matches the file.
+    One(&'c LanguagePluginBinding),
+    /// More than one language plugin entry matches the file. Contains the plugin names, sorted.
+    Conflict(Vec<&'c str>),
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The basic linter state for this configuration.
@@ -75,6 +117,9 @@ pub struct Config {
 
     /// An optional set of overrides to apply to the base state depending on the file being linted.
     pub(crate) overrides: ResolvedOxlintOverrides,
+
+    /// The `languagePlugins` entries of this config, with the entries of the configs that it extends.
+    pub(crate) language_plugins: Vec<LanguagePluginBinding>,
 }
 
 impl Config {
@@ -108,7 +153,17 @@ impl Config {
             base_rules: rules,
             categories,
             overrides,
+            language_plugins: vec![],
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_language_plugins(
+        mut self,
+        language_plugins: Vec<LanguagePluginBinding>,
+    ) -> Self {
+        self.language_plugins = language_plugins;
+        self
     }
 
     pub fn plugins(&self) -> LintPlugins {
@@ -418,6 +473,41 @@ impl ConfigStore {
             current = dir.parent();
         }
         None
+    }
+
+    /// Find the language plugin that parses the file at `path`.
+    ///
+    /// Two entries of the same plugin with the same options are not a conflict.
+    pub fn resolve_language_plugin(&self, path: &Path) -> LanguagePluginMatch<'_> {
+        let config = self.get_related_config(path);
+        if config.language_plugins.is_empty() {
+            return LanguagePluginMatch::None;
+        }
+
+        let mut matched = config
+            .language_plugins
+            .iter()
+            .filter(|binding| binding.matches(path, &self.external_plugin_store));
+        let Some(first) = matched.next() else {
+            return LanguagePluginMatch::None;
+        };
+        let others = matched
+            .filter(|binding| {
+                binding.plugin_id != first.plugin_id || binding.options_json != first.options_json
+            })
+            .collect::<Vec<_>>();
+        if others.is_empty() {
+            return LanguagePluginMatch::One(first);
+        }
+
+        let mut names = std::iter::once(first)
+            .chain(others)
+            .map(|binding| {
+                self.external_plugin_store.language_plugin(binding.plugin_id).name.as_str()
+            })
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        LanguagePluginMatch::Conflict(names)
     }
 
     pub(crate) fn resolve_plugin_rule_names(

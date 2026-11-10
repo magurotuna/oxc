@@ -1,0 +1,7 @@
+{
+  "languagePlugins": [
+    { "name": "test", "specifier": "./language_plugin.ts", "options": { "a": 1 } }
+  ],
+  "categories": { "correctness": "off" },
+  "rules": { "no-debugger": "error" }
+}

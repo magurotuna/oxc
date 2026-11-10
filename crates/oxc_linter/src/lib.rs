@@ -71,17 +71,23 @@ pub use crate::disable_directives::{
 };
 pub use crate::{
     config::{
-        Config, ConfigBuilderError, ConfigStore, ConfigStoreBuilder, ESLintRule, LintIgnoreMatcher,
+        Config, ConfigBuilderError, ConfigStore, ConfigStoreBuilder, ESLintRule,
+        LanguagePluginBinding, LanguagePluginEntry, LanguagePluginMatch, LintIgnoreMatcher,
         LintPlugins, Oxlintrc, ResolvedLinterState,
     },
     context::{ContextSubHost, ContextSubHostOptions, LintContext},
     external_linter::{
         ExternalLinter, ExternalLinterCreateWorkspaceCb, ExternalLinterDestroyWorkspaceCb,
-        ExternalLinterLintFileCb, ExternalLinterLoadPluginCb, ExternalLinterSetupRuleConfigsCb,
-        JsFix, LintFileFailure, LintFileOutput, LintFileResult, LintFileTiming, LintFileTimings,
-        LoadPluginResult, convert_and_merge_js_fixes,
+        ExternalLinterLintFileCb, ExternalLinterLintLanguageFileCb,
+        ExternalLinterLoadLanguagePluginCb, ExternalLinterLoadPluginCb,
+        ExternalLinterSetupRuleConfigsCb, JsFix, LintFileFailure, LintFileOutput, LintFileResult,
+        LintFileTiming, LintFileTimings, LintLanguageFileArgs, LintLanguageFileOutput,
+        LoadLanguagePluginResult, LoadPluginResult, MarkupComment, MarkupReference,
+        MarkupReferenceKind, convert_and_merge_js_fixes,
     },
-    external_plugin_store::{ExternalOptionsId, ExternalPluginStore, ExternalRuleId},
+    external_plugin_store::{
+        ExternalOptionsId, ExternalPluginStore, ExternalRuleId, LanguagePluginId,
+    },
     fixer::{Fix, FixKind, Fixer, Message, PossibleFixes, oxc_code_short_canonical_name},
     frameworks::FrameworkFlags,
     lint_runner::{DirectivesStore, LintRunner, LintRunnerBuilder},

@@ -7,16 +7,20 @@ mod env;
 mod external_plugins;
 mod globals;
 mod ignore_matcher;
+mod language_plugins;
 mod overrides;
 mod oxlintrc;
 pub mod plugins;
 mod rules;
 mod settings;
 pub use config_builder::{ConfigBuilderError, ConfigStoreBuilder};
-pub use config_store::{Config, ConfigStore, ResolvedLinterState};
+pub use config_store::{
+    Config, ConfigStore, LanguagePluginBinding, LanguagePluginMatch, ResolvedLinterState,
+};
 pub use env::OxlintEnv;
 pub use globals::{GlobalValue, OxlintGlobals};
 pub use ignore_matcher::LintIgnoreMatcher;
+pub use language_plugins::LanguagePluginEntry;
 pub use overrides::OxlintOverrides;
 pub use oxlintrc::Oxlintrc;
 pub use plugins::LintPlugins;

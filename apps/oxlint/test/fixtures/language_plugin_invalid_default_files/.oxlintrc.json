@@ -1,0 +1,4 @@
+{
+  "languagePlugins": ["./language_plugin.ts"],
+  "categories": { "correctness": "off" }
+}

@@ -118,6 +118,13 @@ pub struct OxlintOverride {
     #[schemars(schema_with = "external_plugins_schema")]
     pub external_plugins: Option<FxHashSet<ExternalPluginEntry>>,
 
+    /// Not supported in overrides. The config builder gives an error if this is set.
+    /// Set `languagePlugins` at the top level of the config instead, with `pattern` to
+    /// select the files.
+    #[serde(rename = "languagePlugins", default, skip_serializing)]
+    #[schemars(skip)]
+    pub language_plugins: Option<serde_json::Value>,
+
     #[serde(default)]
     pub rules: OxlintRules,
 }

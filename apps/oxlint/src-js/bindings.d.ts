@@ -70,8 +70,14 @@ export type JsDestroyWorkspaceCb = ((arg: string) => void)
 /** JS callback to lint a file. */
 export type JsLintFileCb = ((arg0: string, arg1: number, arg2: Uint8Array | undefined | null, arg3: Array<number>, arg4: Array<number>, arg5: string, arg6: string, arg7: boolean, arg8?: string | undefined | null) => string | null)
 
+/** JS callback to lint a file with a language plugin. */
+export type JsLintLanguageFileCb = ((arg0: string, arg1: number, arg2: string, arg3: string, arg4: Array<number>, arg5: Array<number>, arg6: string, arg7: string, arg8: boolean, arg9?: string | undefined | null) => string)
+
 /** JS callback to load JavaScript config files. */
 export type JsLoadJsConfigsCb = ((arg: Array<string>) => Promise<string>)
+
+/** JS callback to load a language plugin. */
+export type JsLoadLanguagePluginCb = ((arg0: string, arg1?: string | undefined | null, arg2?: string | undefined | null) => Promise<string>)
 
 /** JS callback to load a JS plugin. */
 export type JsLoadPluginCb = ((arg0: string, arg1: string | undefined | null, arg2: boolean, arg3?: string | undefined | null) => Promise<string>)
@@ -90,10 +96,12 @@ export type JsSetupRuleConfigsCb = ((arg: string) => string | null)
  * 5. `create_workspace`: Create a workspace.
  * 6. `destroy_workspace`: Destroy a workspace.
  * 7. `load_js_configs`: Load JavaScript config files.
+ * 8. `load_language_plugin`: Load a language plugin from a file path.
+ * 9. `lint_language_file`: Lint a file with a language plugin.
  *
  * Returns `true` if linting succeeded without errors, `false` otherwise.
  */
-export declare function lint(args: Array<string>, loadPlugin: JsLoadPluginCb, setupRuleConfigs: JsSetupRuleConfigsCb, lintFile: JsLintFileCb, createWorkspace: JsCreateWorkspaceCb, destroyWorkspace: JsDestroyWorkspaceCb, loadJsConfigs: JsLoadJsConfigsCb): Promise<boolean>
+export declare function lint(args: Array<string>, loadPlugin: JsLoadPluginCb, setupRuleConfigs: JsSetupRuleConfigsCb, lintFile: JsLintFileCb, createWorkspace: JsCreateWorkspaceCb, destroyWorkspace: JsDestroyWorkspaceCb, loadJsConfigs: JsLoadJsConfigsCb, loadLanguagePlugin: JsLoadLanguagePluginCb, lintLanguageFile: JsLintLanguageFileCb): Promise<boolean>
 
 /**
  * Parse AST into provided `Uint8Array` buffer, synchronously.

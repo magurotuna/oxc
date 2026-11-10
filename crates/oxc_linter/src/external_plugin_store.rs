@@ -31,6 +31,11 @@ define_index_type! {
     MAX_INDEX = u32::MAX as usize;
 }
 
+define_index_type! {
+    pub struct LanguagePluginId = u32;
+    MAX_INDEX = u32::MAX as usize;
+}
+
 impl ExternalOptionsId {
     /// The value `0`.
     /// Used as the ID when a rule does not have options.
@@ -47,6 +52,10 @@ pub struct ExternalPluginStore {
     /// Options for a rule, indexed by `ExternalOptionsId`.
     /// The rule ID is also stored, so that can merge options with the rule's default options on JS side.
     options: IndexVec<ExternalOptionsId, (ExternalRuleId, SmallVec<[serde_json::Value; 1]>)>,
+
+    /// Language plugins, indexed by the ID that JS gave them.
+    language_plugins: IndexVec<LanguagePluginId, LanguagePlugin>,
+    language_plugin_paths: FxHashMap<PathBuf, LanguagePluginId>,
 
     is_enabled: bool,
 }
@@ -67,6 +76,8 @@ impl ExternalPluginStore {
             plugin_names: FxHashMap::default(),
             rules: IndexVec::default(),
             options,
+            language_plugins: IndexVec::default(),
+            language_plugin_paths: FxHashMap::default(),
             is_enabled,
         }
     }
@@ -117,6 +128,50 @@ impl ExternalPluginStore {
             let rule_id = self.rules.push(ExternalRule { name: rule_name.clone(), plugin_id });
             self.plugins[plugin_id].rules.insert(rule_name, rule_id);
         }
+    }
+
+    /// Returns the ID of the language plugin at `plugin_path`, if it is registered.
+    pub fn language_plugin_id(&self, plugin_path: &Path) -> Option<LanguagePluginId> {
+        self.language_plugin_paths.get(plugin_path).copied()
+    }
+
+    /// Register a language plugin that JS has loaded.
+    ///
+    /// # Errors
+    /// Returns an error if an entry of `default_files` is not a file extension or a file name.
+    ///
+    /// # Panics
+    /// Panics if the plugin at `plugin_path` is already registered, or if `id` is not the next ID.
+    pub fn register_language_plugin(
+        &mut self,
+        plugin_path: PathBuf,
+        id: u32,
+        name: String,
+        default_files: &[String],
+    ) -> Result<LanguagePluginId, String> {
+        assert!(
+            !self.language_plugin_paths.contains_key(&plugin_path),
+            "register_language_plugin: plugin already registered"
+        );
+        assert!(
+            id as usize == self.language_plugins.len(),
+            "register_language_plugin: received ID {id}, but {} language plugins are registered",
+            self.language_plugins.len()
+        );
+        // Register the plugin also if `default_files` is not valid, so that the IDs stay the same
+        // as on the JS side, which has already registered the plugin.
+        let parsed_default_files = LanguagePluginDefaultFiles::parse(default_files);
+        let plugin_id = self.language_plugins.push(LanguagePlugin {
+            name,
+            default_files: parsed_default_files.clone().unwrap_or_default(),
+        });
+        self.language_plugin_paths.insert(plugin_path, plugin_id);
+        parsed_default_files.map(|_| plugin_id)
+    }
+
+    /// Returns the language plugin with this ID.
+    pub fn language_plugin(&self, plugin_id: LanguagePluginId) -> &LanguagePlugin {
+        &self.language_plugins[plugin_id]
     }
 
     /// # Errors
@@ -273,4 +328,108 @@ struct ExternalPlugin {
 struct ExternalRule {
     name: String,
     plugin_id: ExternalPluginId,
+}
+
+/// A loaded language plugin.
+#[derive(Debug)]
+pub struct LanguagePlugin {
+    /// Name of the plugin: the alias from the config, or the name that the plugin defines.
+    pub name: String,
+    /// Files that the plugin parses if its config entry has no `pattern`.
+    pub default_files: LanguagePluginDefaultFiles,
+}
+
+/// The `defaultFiles` of a language plugin.
+///
+/// Plugins give file extensions and file names, not other globs, because the project config
+/// decides which language plugin parses a file. Entries can be:
+/// - an extension: `.vue`, or the glob form `**/*.vue` or `*.vue`
+/// - a file name: `Dockerfile`
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LanguagePluginDefaultFiles {
+    /// Extensions with the leading dot, for example `.vue`.
+    /// An entry also matches a file whose whole name is the extension, for example `.prettierrc`.
+    extensions: Vec<String>,
+    /// File names.
+    file_names: Vec<String>,
+}
+
+impl LanguagePluginDefaultFiles {
+    /// Parse the `defaultFiles` list of a plugin.
+    ///
+    /// # Errors
+    /// Returns an error for an entry that is not an extension or a file name.
+    pub fn parse(entries: &[String]) -> Result<Self, String> {
+        fn has_glob_or_separator(text: &str) -> bool {
+            text.contains(['*', '?', '[', ']', '{', '}', '!', '/', '\\'])
+        }
+
+        let mut default_files = Self::default();
+        for entry in entries {
+            let extension =
+                entry.strip_prefix("**/*").or_else(|| entry.strip_prefix('*')).unwrap_or(entry);
+            if extension.starts_with('.')
+                && extension.len() > 1
+                && !has_glob_or_separator(extension)
+            {
+                default_files.extensions.push(extension.to_string());
+            } else if extension.len() == entry.len()
+                && !matches!(entry.as_str(), "" | "." | "..")
+                && !has_glob_or_separator(entry)
+            {
+                default_files.file_names.push(entry.clone());
+            } else {
+                return Err(format!(
+                    "`defaultFiles` entry `{entry}` is not supported. \
+                     Use a file extension such as `.vue` or `**/*.vue`, or a file name. \
+                     To select other files, set `pattern` for the plugin in the config."
+                ));
+            }
+        }
+        Ok(default_files)
+    }
+
+    /// Returns `true` if the file name matches one of the entries.
+    pub fn matches(&self, file_name: &str) -> bool {
+        self.extensions.iter().any(|extension| file_name.ends_with(extension.as_str()))
+            || self.file_names.iter().any(|name| name == file_name)
+    }
+
+    /// Returns `true` if there are no entries.
+    pub fn is_empty(&self) -> bool {
+        self.extensions.is_empty() && self.file_names.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod test_language_plugin_default_files {
+    use super::LanguagePluginDefaultFiles;
+
+    fn parse(entries: &[&str]) -> Result<LanguagePluginDefaultFiles, String> {
+        LanguagePluginDefaultFiles::parse(
+            &entries.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn extensions_and_file_names() {
+        let default_files = parse(&[".vue", "**/*.svelte", "*.astro", "Dockerfile"]).unwrap();
+        assert!(default_files.matches("App.vue"));
+        assert!(default_files.matches("App.svelte"));
+        assert!(default_files.matches("index.astro"));
+        assert!(default_files.matches("Dockerfile"));
+        assert!(!default_files.matches("App.ts"));
+        assert!(!default_files.matches("vue"));
+        assert!(!default_files.matches("Dockerfile.dev"));
+
+        let default_files = parse(&[".prettierrc"]).unwrap();
+        assert!(default_files.matches(".prettierrc"));
+    }
+
+    #[test]
+    fn other_globs_are_errors() {
+        for entry in ["src/**/*.vue", "**/*.{vue,svelte}", "*", "**/*", "a?.vue", "", "."] {
+            assert!(parse(&[entry]).is_err(), "`{entry}` should be an error");
+        }
+    }
 }

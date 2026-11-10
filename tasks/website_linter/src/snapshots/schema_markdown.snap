@@ -1,5 +1,6 @@
 ---
 source: tasks/website_linter/src/json_schema.rs
+assertion_line: 31
 expression: snapshot
 ---
 ---
@@ -413,6 +414,87 @@ type: `string`
 
 
 Path or package name of the plugin
+
+
+## languagePlugins
+
+type: `array`
+
+
+Language plugins, which parse files of other languages, such as Vue single-file
+components, so that JS plugin rules can lint the whole file.
+
+Each entry is a package name or a path, or an object with `name` and optional
+`specifier`, `pattern`, and `options`. A plugin parses the files that match its
+`pattern`. If you do not set `pattern`, the plugin parses the files in its
+`defaultFiles` list. Each file can match only one language plugin.
+
+Note: Language plugins are experimental and not subject to semver.
+
+Example:
+
+```json
+{
+  "languagePlugins": [
+    "vue-language-plugin",
+    {
+      "name": "svelte-language-plugin",
+      "pattern": "src/**/*.svelte"
+    }
+  ]
+}
+```
+
+
+### languagePlugins[n]
+
+type: `object | string`
+
+
+
+
+
+#### languagePlugins[n].name
+
+type: `string`
+
+
+Package name or path of the language plugin.
+
+If you also set `specifier`, then `name` is a custom name for the plugin at `specifier`.
+
+
+#### languagePlugins[n].options
+
+
+
+Options passed to the `parse` and `load` functions of the plugin.
+
+
+#### languagePlugins[n].pattern
+
+type: `array | string`
+
+
+Glob patterns of the files that this plugin parses, relative to the directory of the config file.
+
+If you do not set `pattern`, the plugin parses the files in its `defaultFiles` list.
+
+
+##### languagePlugins[n].pattern[n]
+
+type: `string`
+
+
+
+
+
+#### languagePlugins[n].specifier
+
+type: `string`
+
+
+Path or package name of the language plugin
 
 
 ## options

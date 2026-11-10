@@ -16,6 +16,7 @@ use crate::{
     config::{
         ESLintRule, OxlintOverrides, OxlintRules,
         external_plugins::ExternalPluginEntry,
+        language_plugins::LanguagePluginEntry,
         plugins::{LintPlugins, is_normal_plugin_name, normalize_plugin_name},
         rules::OverrideRulesError,
     },
@@ -25,9 +26,12 @@ use crate::{
 };
 
 use super::{
-    Config,
+    Config, GlobSet,
     categories::OxlintCategories,
-    config_store::{ResolvedOxlintOverride, ResolvedOxlintOverrideRules, ResolvedOxlintOverrides},
+    config_store::{
+        LanguagePluginBinding, ResolvedOxlintOverride, ResolvedOxlintOverrideRules,
+        ResolvedOxlintOverrides,
+    },
 };
 
 #[must_use = "You dropped your builder without building a Linter! Did you mean to call .build()?"]
@@ -37,6 +41,7 @@ pub struct ConfigStoreBuilder {
     config: LintConfig,
     categories: OxlintCategories,
     overrides: OxlintOverrides,
+    language_plugins: Vec<LanguagePluginBinding>,
 
     // Collect all `extends` file paths for the language server.
     // The server will tell the clients to watch for the extends files.
@@ -62,7 +67,15 @@ impl ConfigStoreBuilder {
         let overrides = OxlintOverrides::default();
         let extended_paths = Vec::new();
 
-        Self { rules, external_rules, config, categories, overrides, extended_paths }
+        Self {
+            rules,
+            external_rules,
+            config,
+            categories,
+            overrides,
+            language_plugins: vec![],
+            extended_paths,
+        }
     }
 
     /// Warn on all rules in all plugins and categories, including those in `nursery`.
@@ -76,7 +89,15 @@ impl ConfigStoreBuilder {
         let rules = RULES.iter().map(|rule| (rule.clone(), AllowWarnDeny::Warn)).collect();
         let external_rules = FxHashMap::default();
         let extended_paths = Vec::new();
-        Self { rules, external_rules, config, categories, overrides, extended_paths }
+        Self {
+            rules,
+            external_rules,
+            config,
+            categories,
+            overrides,
+            language_plugins: vec![],
+            extended_paths,
+        }
     }
 
     /// Create a [`ConfigStoreBuilder`] from a loaded or manually built [`Oxlintrc`].
@@ -117,6 +138,14 @@ impl ConfigStoreBuilder {
         fn check_no_relative_js_plugins_in_extends(
             config: &Oxlintrc,
         ) -> Result<(), ConfigBuilderError> {
+            for entry in config.language_plugins.iter().flatten() {
+                if is_relative_plugin_specifier(&entry.specifier) {
+                    return Err(ConfigBuilderError::RelativeExternalPluginSpecifierInExtends {
+                        plugin_specifier: entry.specifier.clone(),
+                    });
+                }
+            }
+
             if let Some(external_plugins) = &config.external_plugins {
                 for entry in external_plugins {
                     if is_relative_plugin_specifier(&entry.specifier) {
@@ -282,6 +311,39 @@ impl ConfigStoreBuilder {
             }
         }
 
+        if oxlintrc.overrides.iter().any(|r#override| r#override.language_plugins.is_some()) {
+            return Err(ConfigBuilderError::LanguagePluginsInOverrides);
+        }
+
+        // Load language plugins. As for JS plugins, configs are accepted without loading the
+        // plugins if external plugins are disabled.
+        let mut language_plugins = vec![];
+        if let Some(entries) = &oxlintrc.language_plugins
+            && !entries.is_empty()
+            && external_plugin_store.is_enabled()
+        {
+            let Some(external_linter) = external_linter else {
+                return Err(ConfigBuilderError::NoExternalLinterConfigured {
+                    plugin_specifier: entries[0].specifier.clone(),
+                });
+            };
+
+            let resolver = Resolver::new(ResolveOptions {
+                condition_names: vec!["module-sync".into(), "node".into(), "import".into()],
+                ..Default::default()
+            });
+
+            for entry in entries {
+                language_plugins.push(Self::load_language_plugin(
+                    entry,
+                    external_linter,
+                    &resolver,
+                    external_plugin_store,
+                    workspace_uri,
+                )?);
+            }
+        }
+
         let plugins = oxlintrc.plugins.unwrap_or_default();
 
         let rules =
@@ -308,6 +370,7 @@ impl ConfigStoreBuilder {
             config,
             categories,
             overrides: oxlintrc.overrides,
+            language_plugins,
             extended_paths,
         };
 
@@ -518,7 +581,8 @@ impl ConfigStoreBuilder {
             .collect();
         external_rules.sort_unstable_by_key(|(r, _, _)| *r);
 
-        Ok(Config::new(rules, external_rules, self.categories, self.config, resolved_overrides))
+        Ok(Config::new(rules, external_rules, self.categories, self.config, resolved_overrides)
+            .with_language_plugins(self.language_plugins))
     }
 
     fn resolve_overrides(
@@ -713,6 +777,76 @@ impl ConfigStoreBuilder {
     }
 }
 
+impl ConfigStoreBuilder {
+    /// Load the language plugin of a `languagePlugins` entry, if it is not loaded yet,
+    /// and return the binding of the entry.
+    fn load_language_plugin(
+        entry: &LanguagePluginEntry,
+        external_linter: &ExternalLinter,
+        resolver: &Resolver,
+        external_plugin_store: &mut ExternalPluginStore,
+        workspace_uri: Option<&str>,
+    ) -> Result<LanguagePluginBinding, ConfigBuilderError> {
+        let load_failed = |error: String| ConfigBuilderError::LanguagePluginLoadFailed {
+            plugin_specifier: entry.specifier.clone(),
+            error,
+        };
+
+        let Some(callbacks) = &external_linter.language_plugins else {
+            return Err(load_failed(
+                "This build of Oxlint does not support language plugins.".into(),
+            ));
+        };
+
+        let resolved = resolver
+            .resolve(&entry.config_dir, &entry.specifier)
+            .map_err(|e| load_failed(e.to_string()))?;
+        let plugin_path = resolved.full_path();
+
+        let plugin_id =
+            if let Some(plugin_id) = external_plugin_store.language_plugin_id(&plugin_path) {
+                plugin_id
+            } else {
+                // Note: `unwrap()` here is infallible as `plugin_path` is an absolute path.
+                let plugin_url = String::from(Url::from_file_path(&plugin_path).unwrap());
+                let result = (callbacks.load_language_plugin)(
+                    plugin_url,
+                    entry.name.clone(),
+                    workspace_uri.map(String::from),
+                )
+                .map_err(load_failed)?;
+                external_plugin_store
+                    .register_language_plugin(
+                        plugin_path,
+                        result.id,
+                        result.name,
+                        &result.default_files,
+                    )
+                    .map_err(load_failed)?
+            };
+
+        if entry.pattern.is_none()
+            && external_plugin_store.language_plugin(plugin_id).default_files.is_empty()
+        {
+            return Err(load_failed(
+                "The plugin has no `defaultFiles`. Set `pattern` for the plugin in the config."
+                    .into(),
+            ));
+        }
+
+        let options_json =
+            serde_json::to_string(entry.options.as_ref().unwrap_or(&serde_json::Value::Null))
+                .map_err(|e| load_failed(format!("Failed to serialize `options`: {e}")))?;
+
+        Ok(LanguagePluginBinding {
+            plugin_id,
+            base_dir: entry.config_dir.clone(),
+            pattern: entry.pattern.as_ref().map(GlobSet::new),
+            options_json: options_json.into(),
+        })
+    }
+}
+
 fn get_name(plugin_name: &str, rule_name: &str) -> CompactStr {
     if plugin_name == "eslint" {
         CompactStr::from(rule_name)
@@ -784,6 +918,12 @@ pub enum ConfigBuilderError {
         cycle: Vec<PathBuf>,
         referenced_from: Vec<PathBuf>,
     },
+    LanguagePluginLoadFailed {
+        plugin_specifier: String,
+        error: String,
+    },
+    /// `languagePlugins` was set in an override.
+    LanguagePluginsInOverrides,
 }
 
 impl Debug for ConfigBuilderError {
@@ -867,6 +1007,14 @@ impl Display for ConfigBuilderError {
                      If this is a file path, add a file extension (e.g., \".json\")."
                 )
             }
+            ConfigBuilderError::LanguagePluginLoadFailed { plugin_specifier, error } => {
+                write!(f, "Failed to load language plugin: {plugin_specifier}\n  {error}")
+            }
+            ConfigBuilderError::LanguagePluginsInOverrides => f.write_str(
+                "`languagePlugins` is not supported in `overrides`. \
+                 Set `languagePlugins` at the top level of the config, \
+                 and use `pattern` to select the files of each plugin.",
+            ),
             ConfigBuilderError::CircularExtends { cycle, referenced_from } => {
                 writeln!(f, "Circular oxlint config extends detected:")?;
                 write!(f, "{}", cycle.iter().map(|path| path.display()).join("\n -> "))?;
@@ -1427,6 +1575,47 @@ mod test {
             assert!(file.ends_with("invalid_config.json"));
             assert!(reason.contains("Failed to parse"));
         }
+    }
+
+    #[test]
+    fn test_language_plugins_in_overrides_is_an_error() {
+        let oxlintrc: Oxlintrc = serde_json::from_value(serde_json::json!({
+            "overrides": [{ "files": ["*.vue"], "languagePlugins": ["vue-language-plugin"] }]
+        }))
+        .unwrap();
+        let mut external_plugin_store = ExternalPluginStore::default();
+        let error = ConfigStoreBuilder::from_oxlintrc(
+            true,
+            oxlintrc,
+            None,
+            &mut external_plugin_store,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, ConfigBuilderError::LanguagePluginsInOverrides),
+            "expected `LanguagePluginsInOverrides`, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn test_language_plugins_are_not_loaded_if_external_plugins_are_disabled() {
+        let oxlintrc: Oxlintrc = serde_json::from_value(serde_json::json!({
+            "languagePlugins": ["vue-language-plugin"]
+        }))
+        .unwrap();
+        let mut external_plugin_store = ExternalPluginStore::new(false);
+        let config = ConfigStoreBuilder::from_oxlintrc(
+            true,
+            oxlintrc,
+            None,
+            &mut external_plugin_store,
+            None,
+        )
+        .unwrap()
+        .build(&mut external_plugin_store)
+        .unwrap();
+        assert!(config.language_plugins.is_empty());
     }
 
     #[test]

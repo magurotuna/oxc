@@ -13,15 +13,16 @@ use serde::Deserialize;
 use oxc_allocator::{Allocator, free_fixed_size_allocator};
 use oxc_linter::{
     ExternalLinter, ExternalLinterCreateWorkspaceCb, ExternalLinterDestroyWorkspaceCb,
-    ExternalLinterLintFileCb, ExternalLinterLoadPluginCb, ExternalLinterSetupRuleConfigsCb,
-    LintFileFailure, LintFileOutput, LoadPluginResult,
+    ExternalLinterLintFileCb, ExternalLinterLintLanguageFileCb, ExternalLinterLoadLanguagePluginCb,
+    ExternalLinterLoadPluginCb, ExternalLinterSetupRuleConfigsCb, LintFileFailure, LintFileOutput,
+    LintLanguageFileArgs, LintLanguageFileOutput, LoadLanguagePluginResult, LoadPluginResult,
 };
 
 use crate::{
     generated::raw_transfer_constants::{BLOCK_ALIGN, BUFFER_SIZE},
     run::{
-        JsCreateWorkspaceCb, JsDestroyWorkspaceCb, JsLintFileCb, JsLoadPluginCb,
-        JsSetupRuleConfigsCb,
+        JsCreateWorkspaceCb, JsDestroyWorkspaceCb, JsLintFileCb, JsLintLanguageFileCb,
+        JsLoadLanguagePluginCb, JsLoadPluginCb, JsSetupRuleConfigsCb,
     },
 };
 
@@ -32,6 +33,8 @@ pub fn create_external_linter(
     lint_file: JsLintFileCb,
     create_workspace: JsCreateWorkspaceCb,
     destroy_workspace: JsDestroyWorkspaceCb,
+    load_language_plugin: JsLoadLanguagePluginCb,
+    lint_language_file: JsLintLanguageFileCb,
 ) -> ExternalLinter {
     let rust_load_plugin = wrap_load_plugin(load_plugin);
     let rust_setup_rule_configs = wrap_setup_rule_configs(setup_rule_configs);
@@ -46,6 +49,106 @@ pub fn create_external_linter(
         rust_create_workspace,
         rust_destroy_workspace,
     )
+    .with_language_plugins(
+        wrap_load_language_plugin(load_language_plugin),
+        wrap_lint_language_file(lint_language_file),
+    )
+}
+
+/// Result returned by `loadLanguagePlugin` JS callback.
+#[derive(Clone, Debug, Deserialize)]
+pub enum LoadLanguagePluginReturnValue {
+    Success(LoadLanguagePluginResult),
+    Failure(String),
+}
+
+/// Wrap `loadLanguagePlugin` JS callback as a normal Rust function.
+///
+/// The JS-side function is async. The returned Rust function blocks the current thread
+/// until the `Promise` returned by the JS function resolves.
+///
+/// The returned function will panic if called outside of a Tokio runtime.
+fn wrap_load_language_plugin(cb: JsLoadLanguagePluginCb) -> ExternalLinterLoadLanguagePluginCb {
+    Arc::new(Box::new(move |plugin_url, alias, workspace_uri| {
+        let cb = &cb;
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                cb.call_async(FnArgs::from((plugin_url, alias, workspace_uri)))
+                    .await?
+                    .into_future()
+                    .await
+            })
+        });
+
+        match res {
+            Ok(json) => match serde_json::from_str(&json) {
+                Ok(LoadLanguagePluginReturnValue::Success(result)) => Ok(result),
+                Ok(LoadLanguagePluginReturnValue::Failure(err)) => Err(err),
+                Err(err) => Err(format!(
+                    "Failed to deserialize JSON returned by `loadLanguagePlugin`: {err}"
+                )),
+            },
+            Err(err) => Err(format!("`loadLanguagePlugin` threw an error: {err}")),
+        }
+    }))
+}
+
+/// Result returned by `lintLanguageFile` JS callback.
+#[derive(Clone, Debug, Deserialize)]
+pub enum LintLanguageFileReturnValue {
+    Success(LintLanguageFileOutput),
+    Failure(LintFileFailure),
+}
+
+/// Wrap `lintLanguageFile` JS callback as a normal Rust function.
+///
+/// The JS function is synchronous, but runs on the main JS thread.
+/// Use an `mpsc::channel` to block the current thread until it returns.
+fn wrap_lint_language_file(cb: JsLintLanguageFileCb) -> ExternalLinterLintLanguageFileCb {
+    Arc::new(Box::new(move |args: LintLanguageFileArgs| {
+        let (tx, rx) = channel();
+
+        let status = cb.call_with_return_value(
+            FnArgs::from((
+                args.file_path,
+                args.plugin_id,
+                args.plugin_options_json.to_string(),
+                args.source_text,
+                args.rule_ids,
+                args.options_ids,
+                args.settings_json,
+                args.globals_json,
+                args.collect_timings,
+                args.workspace_uri,
+            )),
+            ThreadsafeFunctionCallMode::NonBlocking,
+            move |result, _env| {
+                // `rx.recv()` below blocks until it receives this message, so this cannot fail.
+                let res = tx.send(result);
+                debug_assert!(res.is_ok(), "Failed to send result of `lintLanguageFile`");
+                Ok(())
+            },
+        );
+
+        if status != Status::Ok {
+            return Err(
+                format!("Failed to schedule `lintLanguageFile` callback: {status:?}").into()
+            );
+        }
+
+        match rx.recv() {
+            Ok(Ok(json)) => match serde_json::from_str(&json) {
+                Ok(LintLanguageFileReturnValue::Success(output)) => Ok(output),
+                Ok(LintLanguageFileReturnValue::Failure(failure)) => Err(failure),
+                Err(err) => {
+                    Err(format!("Failed to deserialize JSON returned by `lintLanguageFile`: {err}")
+                        .into())
+                }
+            },
+            Ok(Err(err)) => Err(format!("`lintLanguageFile` threw an error: {err}").into()),
+            Err(err) => Err(format!("`lintLanguageFile` did not respond: {err}").into()),
+        }
+    }))
 }
 
 /// Result returned by `loadPlugin` JS callback.

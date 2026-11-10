@@ -7,6 +7,8 @@ import { debugAssertIsNonNull, debugAssertIsNotUndefined } from "./utils/asserts
 let loadPlugin: typeof import("./plugins/index.ts").loadPlugin | null = null;
 let setupRuleConfigs: typeof import("./plugins/index.ts").setupRuleConfigs | null = null;
 let lintFile: typeof import("./plugins/index.ts").lintFile | null = null;
+let loadLanguagePlugin: typeof import("./plugins/index.ts").loadLanguagePlugin | null = null;
+let lintLanguageFile: typeof import("./plugins/index.ts").lintLanguageFile | null = null;
 let createWorkspace: typeof import("./workspace/index.ts").createWorkspace | null = null;
 let destroyWorkspace: typeof import("./workspace/index.ts").destroyWorkspace | null = null;
 // Lazy-loaded JS/TS config loader (experimental)
@@ -38,11 +40,86 @@ function loadPluginWrapper(
     // Use promises here instead of making `loadPluginWrapper` an async function,
     // to avoid a micro-tick and extra wrapper `Promise` in all later calls to `loadPluginWrapper`
     return import("./plugins/index.ts").then((mod) => {
-      ({ loadPlugin, lintFile, setupRuleConfigs } = mod);
+      ({ loadPlugin, lintFile, setupRuleConfigs, loadLanguagePlugin, lintLanguageFile } = mod);
       return loadPlugin(path, pluginName, pluginNameIsAlias, workspaceUri);
     });
   }
   return loadPlugin(path, pluginName, pluginNameIsAlias, workspaceUri);
+}
+
+/**
+ * Load a language plugin.
+ *
+ * Lazy-loads plugins code on first call, as `loadPluginWrapper` does.
+ *
+ * @param path - Absolute path of plugin file, as a `file://...` URL
+ * @param alias - Name of the plugin from the config, or `null`
+ * @param workspaceUri - Workspace URI (`null` in CLI mode, `string` in LSP mode)
+ * @returns Plugin details or error serialized to JSON string
+ */
+function loadLanguagePluginWrapper(
+  path: string,
+  alias: string | null | undefined,
+  workspaceUri: string | null | undefined,
+): Promise<string> {
+  // `Option::None` on Rust side becomes `null` on JS side, not `undefined`.
+  debugAssertIsNotUndefined(alias, "`alias` should not be `undefined`");
+  debugAssertIsNotUndefined(workspaceUri, "`workspaceUri` should not be `undefined`");
+
+  if (loadLanguagePlugin === null) {
+    return import("./plugins/index.ts").then((mod) => {
+      ({ loadPlugin, lintFile, setupRuleConfigs, loadLanguagePlugin, lintLanguageFile } = mod);
+      return loadLanguagePlugin(path, alias, workspaceUri);
+    });
+  }
+  return loadLanguagePlugin(path, alias, workspaceUri);
+}
+
+/**
+ * Lint a file with a language plugin.
+ *
+ * Delegates to `lintLanguageFile`, which was lazy-loaded by `loadLanguagePluginWrapper`.
+ *
+ * @param filePath - Absolute path of file being linted
+ * @param pluginId - ID of the language plugin
+ * @param pluginOptionsJSON - Options of the `languagePlugins` entry, as JSON
+ * @param sourceText - Source text of the file
+ * @param ruleIds - IDs of rules to run on this file
+ * @param optionsIds - IDs of options to use for rules on this file, in same order as `ruleIds`
+ * @param settingsJSON - Settings for file, as JSON
+ * @param globalsJSON - Globals for file, as JSON
+ * @param collectTimings - Whether to collect per-rule timing information
+ * @param workspaceUri - Workspace URI (`null` in CLI mode, `string` in LSP mode)
+ * @returns Diagnostics, markup references, and markup comments, or an error, serialized to JSON
+ */
+function lintLanguageFileWrapper(
+  filePath: string,
+  pluginId: number,
+  pluginOptionsJSON: string,
+  sourceText: string,
+  ruleIds: number[],
+  optionsIds: number[],
+  settingsJSON: string,
+  globalsJSON: string,
+  collectTimings: boolean,
+  workspaceUri: string | null | undefined,
+): string {
+  debugAssertIsNotUndefined(workspaceUri, "`workspaceUri` should not be `undefined`");
+
+  // Rust calls this only after it loaded a language plugin, so `lintLanguageFile` is defined here
+  debugAssertIsNonNull(lintLanguageFile);
+  return lintLanguageFile(
+    filePath,
+    pluginId,
+    pluginOptionsJSON,
+    sourceText,
+    ruleIds,
+    optionsIds,
+    settingsJSON,
+    globalsJSON,
+    collectTimings,
+    workspaceUri,
+  );
 }
 
 /**
@@ -199,6 +276,8 @@ const success = await lint(
   createWorkspaceWrapper,
   destroyWorkspaceWrapper,
   loadJsConfigsWrapper,
+  loadLanguagePluginWrapper,
+  lintLanguageFileWrapper,
 );
 
 // Note: It's recommended to set `process.exitCode` instead of calling `process.exit()`.

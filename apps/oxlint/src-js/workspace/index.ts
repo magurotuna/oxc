@@ -10,6 +10,7 @@ import { debugAssert } from "../utils/asserts.ts";
 
 import type { Options } from "../plugins/options.ts";
 import type { RuleDetails } from "../plugins/load.ts";
+import type { LanguagePluginDetails } from "../plugins/language.ts";
 
 /**
  * Settings for a workspace.
@@ -19,6 +20,7 @@ interface Workspace {
   rules: RuleDetails[];
   pluginNames: Set<string>;
   allOptions: Readonly<Options>[];
+  languagePlugins: LanguagePluginDetails[];
 }
 
 /**
@@ -50,6 +52,7 @@ export function createWorkspace(workspaceUri: string): undefined {
     allOptions: [],
     rules: [],
     pluginNames: new Set(),
+    languagePlugins: [],
   });
 
   // Set current workspace to `null` to force switching workspace in the next call to `loadPlugin`.

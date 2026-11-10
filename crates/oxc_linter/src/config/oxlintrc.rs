@@ -16,6 +16,7 @@ use super::{
     env::OxlintEnv,
     external_plugins::{ExternalPluginEntry, external_plugins_schema},
     globals::OxlintGlobals,
+    language_plugins::{LanguagePluginEntry, language_plugins_schema},
     overrides::OxlintOverrides,
     rules::OxlintRules,
     settings::OxlintSettings,
@@ -240,6 +241,29 @@ pub struct Oxlintrc {
     #[serde(rename = "jsPlugins", default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "external_plugins_schema")]
     pub external_plugins: Option<FxHashSet<ExternalPluginEntry>>,
+    /// Language plugins, which parse files of other languages, such as Vue single-file
+    /// components, so that JS plugin rules can lint the whole file.
+    ///
+    /// Each entry is a package name or a path, or an object with `name` and optional
+    /// `specifier`, `pattern`, and `options`. A plugin parses the files that match its
+    /// `pattern`. If you do not set `pattern`, the plugin parses the files in its
+    /// `defaultFiles` list. Each file can match only one language plugin.
+    ///
+    /// Note: Language plugins are experimental and not subject to semver.
+    ///
+    /// Example:
+    ///
+    /// ```json
+    /// {
+    ///   "languagePlugins": [
+    ///     "vue-language-plugin",
+    ///     { "name": "svelte-language-plugin", "pattern": "src/**/*.svelte" }
+    ///   ]
+    /// }
+    /// ```
+    #[serde(rename = "languagePlugins", default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "language_plugins_schema")]
+    pub language_plugins: Option<Vec<LanguagePluginEntry>>,
     pub categories: OxlintCategories,
     /// Example
     ///
@@ -462,6 +486,21 @@ impl Oxlintrc {
             (None, None) => None,
         };
 
+        // Entries of `self` come first. An entry that is in both configs is kept once.
+        let language_plugins = match (&self.language_plugins, other.language_plugins) {
+            (Some(self_entries), Some(other_entries)) => {
+                let mut entries = self_entries.clone();
+                for entry in other_entries {
+                    if !entries.contains(&entry) {
+                        entries.push(entry);
+                    }
+                }
+                Some(entries)
+            }
+            (Some(self_entries), None) => Some(self_entries.clone()),
+            (None, other_entries) => other_entries,
+        };
+
         let schema = self.schema.clone().or(other.schema);
         let options = self.options.merge(&other.options);
 
@@ -469,6 +508,7 @@ impl Oxlintrc {
             schema,
             plugins,
             external_plugins,
+            language_plugins,
             categories,
             rules: OxlintRules::new(rules),
             settings,
@@ -488,6 +528,10 @@ impl Oxlintrc {
     /// participates in the `Hash`/`Eq` implementation of each entry, so changing it
     /// requires rehashing the set.
     pub fn set_config_dir(&mut self, config_dir: &Path) {
+        for entry in self.language_plugins.iter_mut().flatten() {
+            entry.config_dir = config_dir.to_path_buf();
+        }
+
         if let Some(external_plugins) = &mut self.external_plugins {
             *external_plugins = std::mem::take(external_plugins)
                 .into_iter()
@@ -733,6 +777,34 @@ mod test {
         base.path = PathBuf::from("/root/base.json");
         let merged = root.merge(base);
         assert_eq!(merged.options.respect_eslint_disable_directives, Some(false));
+    }
+
+    #[test]
+    fn test_oxlintrc_merge_language_plugins() {
+        let mut config: Oxlintrc = serde_json::from_value(json!({
+            "languagePlugins": ["a", { "name": "b", "pattern": "*.vue" }]
+        }))
+        .unwrap();
+        config.set_config_dir(Path::new("/child"));
+        let mut other: Oxlintrc = serde_json::from_value(json!({
+            "languagePlugins": ["c", "a"]
+        }))
+        .unwrap();
+        other.set_config_dir(Path::new("/child"));
+        let merged = config.merge(other);
+        let entries = merged.language_plugins.unwrap();
+        assert_eq!(
+            entries.iter().map(|entry| entry.specifier.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+        assert!(entries.iter().all(|entry| entry.config_dir == Path::new("/child")));
+
+        // An entry of a config in another directory is kept, as its paths are relative to another directory
+        let config: Oxlintrc = serde_json::from_value(json!({ "languagePlugins": ["a"] })).unwrap();
+        let mut other: Oxlintrc =
+            serde_json::from_value(json!({ "languagePlugins": ["a"] })).unwrap();
+        other.set_config_dir(Path::new("/parent"));
+        assert_eq!(config.merge(other).language_plugins.unwrap().len(), 2);
     }
 
     #[test]

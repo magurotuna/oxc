@@ -43,6 +43,10 @@
       "types": "./dist/plugins-dev.d.ts",
       "default": "./dist/plugins-dev.js"
     },
+    "./language-plugins": {
+      "types": "./dist/language-plugins.d.ts",
+      "default": "./dist/language-plugins.js"
+    },
     "./package.json": "./package.json"
   },
   "peerDependencies": {
