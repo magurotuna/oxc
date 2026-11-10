@@ -40,7 +40,7 @@ impl<'a> AstroPartialLoader<'a> {
             .filter(|offset| self.is_fence(*offset));
 
         let start = offsets.next()?;
-        if !self.source_text[..start].chars().all(char::is_whitespace) {
+        if !self.source_text[self.text_start()..start].chars().all(char::is_whitespace) {
             return None;
         }
         let end = offsets.next()?;
@@ -60,8 +60,15 @@ impl<'a> AstroPartialLoader<'a> {
         Some((frontmatter, end as usize + ASTRO_SPLIT.len()))
     }
 
+    /// The offset after the byte order mark (BOM), if the file starts with one. `char::is_whitespace` is `false` for
+    /// the BOM, so the fence checks start after it.
+    fn text_start(&self) -> usize {
+        if self.source_text.starts_with('\u{feff}') { '\u{feff}'.len_utf8() } else { 0 }
+    }
+
     fn is_fence(&self, offset: usize) -> bool {
-        let line_start = self.source_text[..offset].rfind('\n').map_or(0, |index| index + 1);
+        let line_start =
+            self.source_text[..offset].rfind('\n').map_or(self.text_start(), |index| index + 1);
         if !self.source_text[line_start..offset].chars().all(char::is_whitespace) {
             return false;
         }
@@ -206,6 +213,16 @@ mod test {
         assert_eq!(sources[0].start, 12);
         assert_eq!(sources[1].source_text.trim(), r#"console.log("Hi");"#);
         assert_eq!(sources[1].start, 141);
+    }
+
+    #[test]
+    fn test_parse_astro_with_frontmatter_after_bom() {
+        let source_text = "\u{feff}---\nconst title = 1;\n---\n<h1>{title}</h1>\n";
+
+        let sources = parse_astro(source_text);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "\nconst title = 1;\n");
+        assert_eq!(sources[0].start, 6);
     }
 
     #[test]
