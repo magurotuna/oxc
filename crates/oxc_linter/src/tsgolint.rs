@@ -905,6 +905,10 @@ pub fn is_content_mapped_file(path: &Path) -> bool {
 
 /// Type-aware rules that give too many false or missed reports on the TypeScript that content
 /// mappers generate for each framework. Oxlint does not run them on these files.
+///
+/// The lists come from linting real projects with all type-aware rules (element-plus, immich,
+/// shadcn-svelte, starlight, and withastro/docs). A rule is in a list if most of its reports in
+/// these files are on code that the user did not write in that form.
 fn disabled_rules_in_content_mapped_file(path: &Path) -> &'static [&'static str] {
     match path.extension().and_then(OsStr::to_str) {
         Some("vue") => DISABLED_RULES_IN_VUE_FILES,
@@ -914,9 +918,23 @@ fn disabled_rules_in_content_mapped_file(path: &Path) -> &'static [&'static str]
     }
 }
 
-const DISABLED_RULES_IN_VUE_FILES: &[&str] = &[];
-const DISABLED_RULES_IN_SVELTE_FILES: &[&str] = &[];
-const DISABLED_RULES_IN_ASTRO_FILES: &[&str] = &[];
+const DISABLED_RULES_IN_VUE_FILES: &[&str] = &[
+    // The Vue mapper turns an inline handler such as `@click="select(item)"` into an arrow
+    // function that returns `select(item)`, so the rule reports a returned void expression that
+    // the user did not write. In element-plus, 38 of 90 reports were of this kind.
+    "no-confusing-void-expression",
+];
+const DISABLED_RULES_IN_SVELTE_FILES: &[&str] = &[
+    // Svelte types `$props()` as `any`, and every component destructures it, as in
+    // `let { a }: Props = $props()`. In immich, 328 of 459 reports were of this kind.
+    "no-unsafe-assignment",
+];
+const DISABLED_RULES_IN_ASTRO_FILES: &[&str] = &[
+    // Astro types markup elements as `any`, so returning an element, as in
+    // `items.map((item) => <li>{item}</li>)`, is reported. In starlight and withastro/docs, 30 of
+    // 39 reports were of this kind.
+    "no-unsafe-return",
+];
 
 /// In Phase 1, Oxlint does not apply fixes or suggestions from type-aware rules in
 /// content-mapped files, because a fix can include code that the mapper generated.
@@ -2207,6 +2225,26 @@ mod test {
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["report_notices"], serde_json::Value::Bool(true));
         assert_eq!(json["version"], serde_json::json!(2));
+    }
+
+    #[test]
+    fn test_disabled_rules_in_content_mapped_files_are_type_aware_rules() {
+        use std::path::Path;
+
+        use super::disabled_rules_in_content_mapped_file;
+        use crate::rules::RULES;
+
+        for file in ["App.vue", "App.svelte", "App.astro"] {
+            let disabled = disabled_rules_in_content_mapped_file(Path::new(file));
+            assert!(!disabled.is_empty(), "{file}");
+            for name in disabled {
+                assert!(
+                    RULES.iter().any(|rule| rule.is_tsgolint_rule() && rule.name() == *name),
+                    "`{name}` in the list for `{file}` is not a type-aware rule"
+                );
+            }
+        }
+        assert_eq!(disabled_rules_in_content_mapped_file(Path::new("index.ts")), [] as [&str; 0]);
     }
 
     #[test]
