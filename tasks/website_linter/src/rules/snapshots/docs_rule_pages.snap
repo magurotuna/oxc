@@ -1,5 +1,6 @@
 ---
 source: tasks/website_linter/src/rules/mod.rs
+assertion_line: 175
 expression: snapshot
 ---
 --- eslint/no-unused-vars.md ---
@@ -79,6 +80,10 @@ classes, interfaces, and types declared in `.d.ts` files are generally
 used by other files, which are not checked by Oxlint. Since Oxlint does
 not support parsing template syntax, this rule cannot tell if a variable
 is used or unused in a Vue / Svelte / Astro file.
+
+If a language plugin parses a Vue, Svelte, or Astro file and returns
+`markupReferences`, this rule checks the file. A top-level variable that
+the markup reads, or uses as a type, counts as used.
 
 #### Exported
 

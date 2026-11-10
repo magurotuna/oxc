@@ -65,6 +65,10 @@ declare_oxc_lint!(
     /// `bind:value={x}`; in Vue a `<script setup>` `let` is a `setup-let` binding that
     /// `v-model="x"` and inline handlers such as `@click="x = 1"` assign to directly.
     ///
+    /// If a language plugin parses a Vue or Svelte file and returns `markupReferences`,
+    /// this rule checks the file. A top-level variable that the markup assigns to
+    /// is not reported.
+    ///
     /// ### Why is this bad?
     ///
     /// If a variable is never reassigned, using the `const` declaration is better.
@@ -203,8 +207,10 @@ impl Rule for PreferConst {
     }
 
     fn should_run(&self, ctx: &crate::context::ContextHost) -> bool {
-        // ignore svelte/vue: their templates can reassign a binding, which we can't see.
-        !ctx.file_extension().is_some_and(|ext| ext == "svelte" || ext == "vue")
+        // ignore svelte/vue: their templates can reassign a binding, which we can't see,
+        // unless a language plugin returns the markup references.
+        ctx.has_markup_references()
+            || !ctx.file_extension().is_some_and(|ext| ext == "svelte" || ext == "vue")
     }
 }
 
@@ -474,6 +480,11 @@ impl PreferConst {
         is_for_in_of: bool,
         ctx: &LintContext<'_>,
     ) -> bool {
+        // The markup (for example, `v-model="x"` in a Vue template) assigns to the variable
+        if ctx.markup_use(symbol_id).is_some_and(|markup_use| markup_use.write) {
+            return false;
+        }
+
         let symbol_table = ctx.scoping();
 
         // Get all references to this symbol

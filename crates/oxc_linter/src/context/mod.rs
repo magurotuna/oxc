@@ -23,7 +23,8 @@ use crate::{
 };
 
 mod host;
-pub use host::{ContextHost, ContextSubHost, ContextSubHostOptions};
+pub use host::MarkupUses;
+pub use host::{ContextHost, ContextSubHost, ContextSubHostOptions, MarkupUse};
 
 /// Contains all of the state and context specific to this lint rule.
 ///
@@ -72,6 +73,18 @@ impl<'a> Deref for LintContext<'a> {
 }
 
 impl<'a> LintContext<'a> {
+    /// How the markup of the file (for example, a Vue template) uses a symbol.
+    ///
+    /// Returns `None` if the symbol is not a top-level variable of the script, or if no language
+    /// plugin returned the markup references of the file.
+    pub fn markup_use(&self, symbol_id: oxc_semantic::SymbolId) -> Option<MarkupUse> {
+        let scoping = self.scoping();
+        if scoping.symbol_scope_id(symbol_id) != scoping.root_scope_id() {
+            return None;
+        }
+        self.parent.markup_use(scoping.symbol_name(symbol_id))
+    }
+
     /// Get information such as the control flow graph, bound symbols, AST, etc.
     /// for the file being linted.
     ///

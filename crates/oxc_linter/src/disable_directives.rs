@@ -317,6 +317,9 @@ pub struct DisableRuleComment {
     pub fix_span: Span,
     /// Rules disabled by the comment
     pub r#type: RuleCommentType,
+    /// Whether a report of this comment as unused can have a fix that removes it.
+    /// `false` for comments in markup, such as `<!-- eslint-disable -->`.
+    pub fixable: bool,
 }
 
 impl DisableRuleComment {
@@ -362,6 +365,9 @@ pub struct DisableDirectives {
     used_disable_comments: RefCell<Vec<DisabledRule>>,
     /// Hash of the source text these directives were built from, if recorded
     source_hash: Option<u64>,
+    /// Whole spans of the directive comments whose reports as unused have no fix
+    /// (comments in markup, such as `<!-- eslint-disable -->`)
+    unfixable_comment_spans: Box<[Span]>,
 }
 
 impl DisableDirectives {
@@ -388,8 +394,12 @@ impl DisableDirectives {
         let mut disable_rule_comments = vec![];
         let mut unused_enable_comments = vec![];
         let mut used_disable_comments = vec![];
+        let mut unfixable_comment_spans = vec![];
 
         for (directives, offset) in sections {
+            unfixable_comment_spans.extend(
+                directives.unfixable_comment_spans.iter().map(|span| span.move_right(offset)),
+            );
             for interval in directives.intervals.iter() {
                 let mut val = interval.val.clone();
                 val.move_offset(offset);
@@ -431,6 +441,7 @@ impl DisableDirectives {
             unused_enable_comments: unused_enable_comments.into_boxed_slice(),
             used_disable_comments: RefCell::new(used_disable_comments),
             source_hash: None,
+            unfixable_comment_spans: unfixable_comment_spans.into_boxed_slice(),
         }
     }
 
@@ -555,12 +566,14 @@ impl DisableDirectives {
                     return None;
                 }
 
+                let fixable = !self.unfixable_comment_spans.contains(comment_span);
                 if rules.len() == group_vec.len() {
                     return Some(DisableRuleComment {
                         directive_prefix: group_vec[0].val.directive_prefix(),
                         span: *comment_span,
                         fix_span,
                         r#type: RuleCommentType::All,
+                        fixable,
                     });
                 }
 
@@ -569,6 +582,7 @@ impl DisableDirectives {
                     span: *comment_span,
                     fix_span,
                     r#type: RuleCommentType::Single(rules),
+                    fixable,
                 })
             })
             .collect()
@@ -578,6 +592,8 @@ impl DisableDirectives {
 pub struct DisableDirectivesBuilder {
     /// Which directive prefixes should be recognized.
     respect_eslint_disable_directives: bool,
+    /// Whether reports of unused directives can have fixes. See [`DisableRuleComment::fixable`].
+    fixable: bool,
     /// All the disabled rules with their corresponding covering spans
     intervals: Lapper<u32, DisabledRule>,
     /// Start of `eslint-disable` or `oxlint-disable`
@@ -588,17 +604,21 @@ pub struct DisableDirectivesBuilder {
     disable_rule_comments: Vec<DisableRuleComment>,
     /// Spans of unused enable directives
     unused_enable_comments: Vec<(DirectivePrefix, Option<String>, Span)>,
+    /// Whole spans of directive comments, if `fixable` is `false`
+    unfixable_comment_spans: Vec<Span>,
 }
 
 impl DisableDirectivesBuilder {
     pub fn new() -> Self {
         Self {
             respect_eslint_disable_directives: true,
+            fixable: true,
             intervals: Lapper::new(vec![]),
             disable_all_start: None,
             disable_start_map: FxHashMap::default(),
             disable_rule_comments: vec![],
             unused_enable_comments: vec![],
+            unfixable_comment_spans: vec![],
         }
     }
 
@@ -612,9 +632,31 @@ impl DisableDirectivesBuilder {
     }
 
     pub fn build(mut self, source_text: &str, comments: &[Comment]) -> DisableDirectives {
-        self.build_impl(source_text, comments);
+        self.build_impl(
+            source_text,
+            comments.iter().map(|comment| (comment.span, comment.content_span())),
+        );
+        self.finish()
+    }
 
+    /// Build the directives of comments in markup, such as `<!-- eslint-disable -->` in a Vue
+    /// template.
+    ///
+    /// Each item is the whole span of a comment (with its delimiters) and the span of its text,
+    /// in `source_text`, in order of position. Reports of these directives as unused have no fix.
+    pub fn build_markup(
+        mut self,
+        source_text: &str,
+        comments: impl IntoIterator<Item = (Span, Span)>,
+    ) -> DisableDirectives {
+        self.fixable = false;
+        self.build_impl(source_text, comments);
+        self.finish()
+    }
+
+    fn finish(self) -> DisableDirectives {
         DisableDirectives {
+            unfixable_comment_spans: self.unfixable_comment_spans.into_boxed_slice(),
             intervals: self.intervals,
             disable_rule_comments: self.disable_rule_comments.into_boxed_slice(),
             unused_enable_comments: self.unused_enable_comments.into_boxed_slice(),
@@ -634,9 +676,9 @@ impl DisableDirectivesBuilder {
     /// trailing newline). Otherwise returns the comment's full outer span
     /// (including `//` or `/* */` delimiters).
     #[expect(clippy::cast_possible_truncation)]
-    pub(crate) fn compute_comment_fix_span(comment: &Comment, source_text: &str) -> Span {
-        let outer_start = comment.span.start as usize;
-        let outer_end = comment.span.end as usize;
+    pub(crate) fn compute_comment_fix_span(comment_span: Span, source_text: &str) -> Span {
+        let outer_start = comment_span.start as usize;
+        let outer_end = comment_span.end as usize;
 
         // Find the start of the current line (character after the preceding `\n`, or 0).
         let line_start = source_text[..outer_start].rfind('\n').map_or(0, |i| i + 1);
@@ -655,12 +697,12 @@ impl DisableDirectivesBuilder {
         } else {
             // There is other content on the same line – only delete the comment
             // itself (including its delimiters).
-            comment.span
+            comment_span
         }
     }
 
     #[expect(clippy::cast_possible_truncation)] // for `as u32`
-    fn build_impl(&mut self, source_text: &str, comments: &[Comment]) {
+    fn build_impl(&mut self, source_text: &str, comments: impl IntoIterator<Item = (Span, Span)>) {
         let source_len = source_text.len() as u32;
         // This algorithm iterates through the comments and builds all intervals
         // for matching disable and enable pairs.
@@ -674,11 +716,10 @@ impl DisableDirectivesBuilder {
         // enable directive keep the same logic for checking unused
         let mut unused_enable_directives: Vec<(DirectivePrefix, Option<String>, Span)> = vec![];
 
-        for comment in comments {
-            let comment_span = comment.content_span();
-            // `comment.span` is the full outer span (including `//` or `/* */` delimiters).
+        for (outer_span, comment_span) in comments {
+            // `comment_span` is the text of the comment.
+            // `outer_span` is the full outer span (including `//` or `/* */` delimiters).
             // It is used as the diagnostic span.
-            let outer_span = comment.span;
             let text_source = comment_span.source_text(source_text);
             let text = text_source.trim_start();
             let Some((directive_prefix, directive_kind, rule_list_text)) =
@@ -690,7 +731,10 @@ impl DisableDirectivesBuilder {
             // Pre-compute the fix span for this directive comment:
             // - whole line (incl. leading whitespace + newline) if the comment is alone on the line
             // - outer comment span (incl. `//` / `/* */` delimiters) otherwise
-            let comment_fix_span = Self::compute_comment_fix_span(comment, source_text);
+            let comment_fix_span = Self::compute_comment_fix_span(outer_span, source_text);
+            if !self.fixable {
+                self.unfixable_comment_spans.push(outer_span);
+            }
 
             let rule_names = Self::collect_rule_names(rule_list_text);
             let rule_list_start = comment_span.end - rule_list_text.len() as u32;
@@ -711,6 +755,7 @@ impl DisableDirectivesBuilder {
                             span: comment_span,
                             fix_span: comment_fix_span,
                             r#type: RuleCommentType::All,
+                            fixable: self.fixable,
                         });
                     } else {
                         // `eslint-disable rule-name1, rule-name2`
@@ -735,6 +780,7 @@ impl DisableDirectivesBuilder {
                             span: comment_span,
                             fix_span: comment_fix_span,
                             r#type: RuleCommentType::Single(rules),
+                            fixable: self.fixable,
                         });
                     }
                 }
@@ -769,6 +815,7 @@ impl DisableDirectivesBuilder {
                             span: comment_span,
                             fix_span: comment_fix_span,
                             r#type: RuleCommentType::All,
+                            fixable: self.fixable,
                         });
                     } else {
                         // `eslint-disable-next-line rule_name1, rule_name2`
@@ -798,6 +845,7 @@ impl DisableDirectivesBuilder {
                             span: comment_span,
                             fix_span: comment_fix_span,
                             r#type: RuleCommentType::Single(rules),
+                            fixable: self.fixable,
                         });
                     }
                 }
@@ -825,6 +873,7 @@ impl DisableDirectivesBuilder {
                             span: comment_span,
                             fix_span: comment_fix_span,
                             r#type: RuleCommentType::All,
+                            fixable: self.fixable,
                         });
                     } else {
                         // `eslint-disable-line rule-name1, rule-name2`
@@ -854,6 +903,7 @@ impl DisableDirectivesBuilder {
                             span: comment_span,
                             fix_span: comment_fix_span,
                             r#type: RuleCommentType::Single(rules),
+                            fixable: self.fixable,
                         });
                     }
                 }
@@ -1513,7 +1563,9 @@ pub fn create_unused_directives_messages(
         let span = unused_comment.span;
         let prefix = unused_comment.directive_prefix;
         let fix_source_text = fix
-            .filter(|(kind, _)| kind.can_apply(prefix.unused_directive_fix_kind()))
+            .filter(|(kind, _)| {
+                unused_comment.fixable && kind.can_apply(prefix.unused_directive_fix_kind())
+            })
             .map(|(_, source_text)| source_text);
         match unused_comment.r#type {
             RuleCommentType::All => {
@@ -1577,7 +1629,7 @@ mod tests {
     };
     use crate::fixer::{Fixer, Message, PossibleFixes};
 
-    use super::{DisableDirectives, DisableDirectivesBuilder};
+    use super::{DisableDirectives, DisableDirectivesBuilder, create_unused_directives_messages};
 
     fn process_source<'a>(allocator: &'a Allocator, source_text: &'a str) -> Semantic<'a> {
         let source_type = SourceType::default();
@@ -1668,7 +1720,7 @@ mod tests {
 
     /// Replicates the `compute_comment_fix_span` logic for use in tests.
     fn comment_fix_span(comment: &Comment, source_text: &str) -> Span {
-        DisableDirectivesBuilder::compute_comment_fix_span(comment, source_text)
+        DisableDirectivesBuilder::compute_comment_fix_span(comment.span, source_text)
     }
 
     fn directive_prefix_for_comment(comment: &Comment, source_text: &str) -> DirectivePrefix {
@@ -2360,5 +2412,69 @@ function test() {
             directives.contains("export", export_span),
             "`import/export` directive must suppress the `export` rule"
         );
+    }
+
+    /// Find `needle` in `source_text`, as a span.
+    #[expect(clippy::cast_possible_truncation)]
+    fn find_span(source_text: &str, needle: &str) -> Span {
+        let start = source_text.find(needle).unwrap() as u32;
+        Span::sized(start, needle.len() as u32)
+    }
+
+    #[test]
+    fn markup_directives_apply_to_the_next_line_and_have_no_fix() {
+        let source_text = "<template>\n  <!-- eslint-disable-next-line no-console -->\n  <p></p>\n  <!-- eslint-disable-next-line no-debugger -->\n  <p></p>\n</template>\n";
+        let comments = [
+            "<!-- eslint-disable-next-line no-console -->",
+            "<!-- eslint-disable-next-line no-debugger -->",
+        ]
+        .map(|comment| {
+            let span = find_span(source_text, comment);
+            (span, Span::new(span.start + 4, span.end - 3))
+        });
+        let directives = DisableDirectivesBuilder::new().build_markup(source_text, comments);
+
+        // The first `<p>` is on the line after the `no-console` directive
+        let first_p = find_span(source_text, "<p></p>");
+        assert!(directives.contains("no-console", first_p));
+        assert!(!directives.contains("no-debugger", first_p));
+
+        // The `no-debugger` directive is unused. Its report has no fix, even if fixes are enabled,
+        // because the comment syntax of the markup is not known.
+        let messages = create_unused_directives_messages(
+            &directives,
+            crate::AllowWarnDeny::Warn,
+            Some((crate::FixKind::All, source_text)),
+        );
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].fixes, PossibleFixes::None));
+
+        // Merged with the directives of a section, the markup directive still has no fix
+        let merged = DisableDirectives::merge_sections([(directives, 0)]);
+        let messages = create_unused_directives_messages(
+            &merged,
+            crate::AllowWarnDeny::Warn,
+            Some((crate::FixKind::All, source_text)),
+        );
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].fixes, PossibleFixes::None));
+    }
+
+    #[test]
+    fn script_directives_merged_with_markup_directives_keep_their_fix() {
+        let source_text = "// eslint-disable-next-line no-console\nlet x = 1;\n";
+        let allocator = Allocator::default();
+        let semantic = process_source(&allocator, source_text);
+        let directives =
+            DisableDirectivesBuilder::new().build(semantic.source_text(), semantic.comments());
+        let markup = DisableDirectivesBuilder::new().build_markup(source_text, []);
+        let merged = DisableDirectives::merge_sections([(directives, 0), (markup, 0)]);
+        let messages = create_unused_directives_messages(
+            &merged,
+            crate::AllowWarnDeny::Warn,
+            Some((crate::FixKind::All, source_text)),
+        );
+        assert_eq!(messages.len(), 1);
+        assert!(!matches!(messages[0].fixes, PossibleFixes::None));
     }
 }

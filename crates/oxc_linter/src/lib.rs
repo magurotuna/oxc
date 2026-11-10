@@ -107,7 +107,7 @@ pub use crate::{
 };
 use crate::{
     config::{LintConfig, OxlintEnv, OxlintGlobals, OxlintSettings},
-    context::ContextHost,
+    context::{ContextHost, MarkupUses},
     external_linter::GlobalsAndEnvs,
     fixer::CompositeFix,
     loader::LINT_PARTIAL_LOADER_EXTENSIONS,
@@ -417,10 +417,20 @@ impl Linter {
             &config,
             rule_timing_store,
         );
+        // Directives in the comments of the markup, such as `<!-- eslint-disable -->`, and the uses
+        // of top-level script variables in the markup.
+        let markup_directives = language_file.as_ref().zip(source_text).and_then(|(file, text)| {
+            file.markup_directives(text, self.respect_eslint_disable_directives())
+        });
+        let markup_uses =
+            language_file.as_ref().and_then(|file| file.markup_references.as_deref()).map(
+                |references| markup_uses_of_file(path, source_text, &context_sub_hosts, references),
+            );
 
         let mut ctx_host = Rc::new(
             ContextHost::new(path, context_sub_hosts, allocator, self.options, config)
-                .with_react_compiler_env_options(react_compiler_env_options),
+                .with_react_compiler_env_options(react_compiler_env_options)
+                .with_markup_uses(markup_uses),
         );
 
         #[cfg(debug_assertions)]
@@ -531,11 +541,19 @@ impl Linter {
             }
         }
 
+        // Directives in markup comments apply to native rules in all sections.
+        if let Some(markup_directives) = &markup_directives {
+            ctx_host.apply_markup_directives(markup_directives);
+        }
+
         // Pass 2: Run JS plugin rules on every sub host in turn.
         // If a language plugin parsed the file, JS plugin rules have already run on the whole file,
         // so add their reports instead.
         if let Some(language_file) = language_file {
-            ctx_host.add_language_file_diagnostics(language_file.diagnostics);
+            ctx_host.add_language_file_diagnostics(
+                language_file.diagnostics,
+                markup_directives.as_ref(),
+            );
         } else {
             ctx_host.rewind_sub_hosts();
             loop {
@@ -554,7 +572,7 @@ impl Linter {
             }
         }
         if let Some(error) = language_plugin_error {
-            ctx_host.add_language_file_diagnostics(vec![(error, None)]);
+            ctx_host.add_language_file_diagnostics(vec![(error, None)], None);
         }
 
         // Partial loader files (Vue/Astro/Svelte) return their directives only if the type-aware
@@ -579,16 +597,37 @@ impl Linter {
                     break;
                 }
             }
+            // Unused directives in markup comments have no fix: the comment syntax of the markup
+            // is not known here.
+            if let Some(markup_directives) = &markup_directives {
+                let messages = create_unused_directives_messages(markup_directives, severity, None);
+                ctx_host.add_language_file_diagnostics(
+                    messages.into_iter().map(|message| (message, None)).collect(),
+                    None,
+                );
+            }
         }
 
         let diagnostics = ctx_host.take_diagnostics();
         let disable_directives = if !return_directives {
             None
         } else if is_partial_loader_file {
-            return_partial_loader_directives
-                .then(|| Rc::try_unwrap(ctx_host).unwrap().into_merged_disable_directives())
+            return_partial_loader_directives.then(|| {
+                Rc::try_unwrap(ctx_host)
+                    .unwrap()
+                    .into_merged_disable_directives_with(markup_directives)
+            })
         } else {
-            Rc::try_unwrap(ctx_host).unwrap().into_disable_directives()
+            let directives = Rc::try_unwrap(ctx_host).unwrap().into_disable_directives();
+            match (directives, markup_directives) {
+                (Some(directives), Some(markup_directives)) => {
+                    Some(DisableDirectives::merge_sections([
+                        (directives, 0),
+                        (markup_directives, 0),
+                    ]))
+                }
+                (directives, markup_directives) => directives.or(markup_directives),
+            }
         };
 
         let result = (diagnostics, disable_directives);
@@ -612,12 +651,15 @@ impl Linter {
     ///
     /// Native rules do not run, because there is no script. Returns `None` if no language plugin
     /// parses the file.
+    ///
+    /// The directives of markup comments are returned as [`Linter::run_with_disable_directives`]
+    /// returns the directives of files with more than one section.
     pub fn run_language_file_without_scripts(
         &self,
         path: &Path,
         source_text: &str,
         rule_timing_store: Option<&RuleTimingStore>,
-    ) -> Option<Vec<Message>> {
+    ) -> Option<(Vec<Message>, Option<DisableDirectives>)> {
         let ResolvedLinterState { external_rules, config, .. } = self.config.resolve(path);
         let (language_file, error) = self.lint_with_language_plugin(
             path,
@@ -629,13 +671,33 @@ impl Linter {
         if language_file.is_none() && error.is_none() {
             return None;
         }
+        let markup_directives = language_file.as_ref().and_then(|file| {
+            file.markup_directives(source_text, self.respect_eslint_disable_directives())
+        });
         let mut messages: Vec<Message> = language_file
             .into_iter()
             .flat_map(|language_file| language_file.diagnostics)
+            .filter(|(message, rule_name)| {
+                !rule_name.as_deref().is_some_and(|rule_name| {
+                    markup_directives
+                        .as_ref()
+                        .is_some_and(|directives| directives.contains(rule_name, message.span))
+                })
+            })
             .map(|(message, _rule_name)| message)
             .collect();
         messages.extend(error);
-        Some(messages)
+
+        if self.options.type_aware_partial_loader_files {
+            return Some((messages, markup_directives));
+        }
+        if let Some(severity) = self.options.report_unused_directive
+            && severity.is_warn_deny()
+            && let Some(markup_directives) = &markup_directives
+        {
+            messages.extend(create_unused_directives_messages(markup_directives, severity, None));
+        }
+        Some((messages, None))
     }
 
     /// Run the JS plugin rules of a file on the syntax tree of its language plugin.
@@ -1151,6 +1213,29 @@ impl Linter {
     fn duration_from_millis(duration_ms: f64) -> Option<Duration> {
         Duration::try_from_secs_f64(duration_ms / 1000.0).ok()
     }
+}
+
+/// Get the uses of top-level script variables in the markup of a file.
+///
+/// In Astro files, the markup can use only the variables of the frontmatter, which is the first
+/// section. `<script>` tags are client scripts. So without a frontmatter, no section gets markup uses.
+fn markup_uses_of_file(
+    path: &Path,
+    source_text: Option<&str>,
+    context_sub_hosts: &[ContextSubHost<'_>],
+    references: &[external_linter::MarkupReference],
+) -> MarkupUses {
+    if path.extension().is_none_or(|ext| ext != "astro") {
+        return MarkupUses::new(references, false);
+    }
+    let has_frontmatter =
+        source_text.zip(context_sub_hosts.first()).is_some_and(|(text, sub_host)| {
+            let offset = sub_host.source_text_offset() as usize;
+            text.get(..offset)
+                .and_then(|before| before.strip_suffix("---"))
+                .is_some_and(|before| before.trim_start_matches('\u{feff}').trim().is_empty())
+        });
+    MarkupUses::new(if has_frontmatter { references } else { &[] }, true)
 }
 
 /// Metadata written to end of buffer.

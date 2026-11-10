@@ -136,8 +136,9 @@ pub struct LintLanguageFileOutput {
     pub diagnostics: Vec<LintFileResult>,
     pub timings: Option<LintFileTimings>,
     /// References from the markup to top-level script variables.
+    /// `None` if the plugin does not return them.
     #[serde(default)]
-    pub markup_references: Vec<MarkupReference>,
+    pub markup_references: Option<Vec<MarkupReference>>,
     /// Comments in the markup.
     #[serde(default)]
     pub markup_comments: Vec<MarkupComment>,

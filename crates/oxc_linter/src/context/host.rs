@@ -10,6 +10,7 @@ use oxc_allocator::{Allocator, ArenaBox};
 use oxc_parser::Token;
 use oxc_semantic::Semantic;
 use oxc_span::{SourceType, Span};
+use rustc_hash::FxHashMap;
 
 use crate::{
     AllowWarnDeny, FrameworkFlags,
@@ -132,6 +133,47 @@ impl Default for ContextSubHostOptions<'_> {
     }
 }
 
+/// How the markup of a file uses a top-level variable of its script, from the
+/// `markupReferences` of a language plugin.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MarkupUse {
+    /// The markup reads the variable, or uses it as a type.
+    pub read: bool,
+    /// The markup assigns to the variable.
+    pub write: bool,
+}
+
+/// The top-level variables of a file's script that its markup uses.
+#[derive(Debug, Default)]
+pub struct MarkupUses {
+    uses: FxHashMap<String, MarkupUse>,
+    /// If `true`, only the first section can be used by the markup (the frontmatter of an Astro
+    /// file). Other `<script>` blocks of Astro files are separate client scripts.
+    first_section_only: bool,
+}
+
+impl MarkupUses {
+    pub(crate) fn new(
+        references: &[crate::external_linter::MarkupReference],
+        first_section_only: bool,
+    ) -> Self {
+        use crate::external_linter::MarkupReferenceKind;
+        let mut uses = FxHashMap::<String, MarkupUse>::default();
+        for reference in references {
+            let entry = uses.entry(reference.name.clone()).or_default();
+            match reference.kind {
+                MarkupReferenceKind::Read | MarkupReferenceKind::Type => entry.read = true,
+                MarkupReferenceKind::Write => entry.write = true,
+                MarkupReferenceKind::ReadWrite => {
+                    entry.read = true;
+                    entry.write = true;
+                }
+            }
+        }
+        Self { uses, first_section_only }
+    }
+}
+
 /// Stores shared information about a file being linted.
 ///
 /// When linting a file, there are a number of shared resources that are
@@ -188,6 +230,9 @@ pub struct ContextHost<'a> {
     /// Config-derived environment additions for that shared run (from the
     /// `react/capitalized-calls` rule's options).
     react_compiler_env_options: ReactCompilerEnvOptions,
+    /// Uses of top-level script variables in the markup of the file. `None` if no language
+    /// plugin returned `markupReferences` for the file.
+    markup_uses: Option<MarkupUses>,
 }
 
 impl std::fmt::Debug for ContextHost<'_> {
@@ -229,6 +274,7 @@ impl<'a> ContextHost<'a> {
             with_ignore_fixes: options.with_ignore_fixes,
             react_compiler_results: OnceCell::new(),
             react_compiler_env_options: ReactCompilerEnvOptions::default(),
+            markup_uses: None,
         }
         .sniff_for_frameworks()
     }
@@ -239,6 +285,27 @@ impl<'a> ContextHost<'a> {
     pub fn with_react_compiler_env_options(mut self, env_options: ReactCompilerEnvOptions) -> Self {
         self.react_compiler_env_options = env_options;
         self
+    }
+
+    /// Set the uses of top-level script variables in the markup of the file.
+    pub(crate) fn with_markup_uses(mut self, markup_uses: Option<MarkupUses>) -> Self {
+        self.markup_uses = markup_uses;
+        self
+    }
+
+    /// Returns `true` if a language plugin returned the markup references of this file.
+    /// Then rules such as `no-unused-vars` can see which variables the markup uses.
+    pub fn has_markup_references(&self) -> bool {
+        self.markup_uses.is_some()
+    }
+
+    /// How the markup uses the top-level variable `name` of the current section.
+    pub(crate) fn markup_use(&self, name: &str) -> Option<MarkupUse> {
+        let markup_uses = self.markup_uses.as_ref()?;
+        if markup_uses.first_section_only && self.current_sub_host_index.get() != 0 {
+            return None;
+        }
+        markup_uses.uses.get(name).copied()
     }
 
     /// Config-derived environment additions for the shared React Compiler run.
@@ -367,9 +434,13 @@ impl<'a> ContextHost<'a> {
     /// (`None` for errors that are not reports of a rule). A disable directive applies to a report
     /// if the directive is in the section (`<script>` block) where the report starts, as for the
     /// reports of native rules.
+    ///
+    /// `markup_directives` are the directives of the markup comments, with spans in the whole file.
+    /// They apply after the directives of the sections.
     pub(crate) fn add_language_file_diagnostics(
         &self,
         diagnostics: Vec<(Message, Option<String>)>,
+        markup_directives: Option<&DisableDirectives>,
     ) {
         let mut out = self.diagnostics.borrow_mut();
         for (message, rule_name) in diagnostics {
@@ -388,9 +459,23 @@ impl<'a> ContextHost<'a> {
                         continue;
                     }
                 }
+                if markup_directives
+                    .is_some_and(|directives| directives.contains(rule_name, message.span))
+                {
+                    continue;
+                }
             }
             out.push(message);
         }
+    }
+
+    /// Remove the reports of native rules that a directive in a markup comment covers.
+    /// The spans of the reports and of `markup_directives` are positions in the whole file.
+    pub(crate) fn apply_markup_directives(&self, markup_directives: &DisableDirectives) {
+        self.diagnostics.borrow_mut().retain(|message| {
+            let Some(rule_name) = message.error.code.number.as_deref() else { return true };
+            !markup_directives.contains(rule_name, message.span)
+        });
     }
 
     // Append a list of diagnostics. Only used in report_unused_directives.
@@ -461,10 +546,20 @@ impl<'a> ContextHost<'a> {
     ///
     /// Use this for files with more than one section, such as Vue, Svelte, and Astro files.
     pub fn into_merged_disable_directives(self) -> DisableDirectives {
+        self.into_merged_disable_directives_with(None)
+    }
+
+    /// Same as [`ContextHost::into_merged_disable_directives`], and also merges the directives of
+    /// the markup comments (with spans in the whole file), if any.
+    pub(crate) fn into_merged_disable_directives_with(
+        self,
+        markup_directives: Option<DisableDirectives>,
+    ) -> DisableDirectives {
         DisableDirectives::merge_sections(
             self.sub_hosts
                 .into_iter()
-                .map(|sub_host| (sub_host.disable_directives, sub_host.source_text_offset)),
+                .map(|sub_host| (sub_host.disable_directives, sub_host.source_text_offset))
+                .chain(markup_directives.map(|directives| (directives, 0))),
         )
     }
 

@@ -303,7 +303,7 @@ function lintLanguageFileImpl(
   globalsJSON: string,
   workspaceUri: string | null,
   timings: RuleTiming[] | null,
-): { markupReferences: MarkupReferenceReport[]; markupComments: MarkupCommentReport[] } {
+): { markupReferences: MarkupReferenceReport[] | null; markupComments: MarkupCommentReport[] } {
   debugAssert(
     ruleIds.length === optionsIds.length,
     "`ruleIds` and `optionsIds` should be same length",
@@ -455,15 +455,17 @@ function parseAndLoad(
 
 /**
  * Convert `markupReferences` of a loaded file to the form sent to Rust.
+ * Returns `null` if the plugin does not return `markupReferences`.
  *
  * @throws {TypeError} If `markupReferences` is invalid
  */
 function convertMarkupReferences(
   loaded: LoadedLanguageFile,
   pluginName: string,
-): MarkupReferenceReport[] {
+): MarkupReferenceReport[] | null {
   const { markupReferences } = loaded;
-  if (markupReferences == null) return [];
+  // `null` tells Rust that the plugin does not know the markup's references
+  if (markupReferences == null) return null;
   const fail = (message: string): never => {
     throw new TypeError(`\`markupReferences\` of language plugin \`${pluginName}\` ${message}`);
   };

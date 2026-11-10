@@ -1,0 +1,11 @@
+{
+  "languagePlugins": ["./language_plugin.ts"],
+  "jsPlugins": ["./rules.ts"],
+  "categories": { "correctness": "off" },
+  "rules": {
+    "no-debugger": "error",
+    "no-unused-vars": "error",
+    "prefer-const": "error",
+    "markup-rules/no-bad-element": "error"
+  }
+}

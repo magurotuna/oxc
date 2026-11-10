@@ -4,7 +4,7 @@
 //! into its own syntax tree. JS plugin rules run on that syntax tree, in one JS call per file.
 //! Rust rules still run on the `<script>` blocks that the partial loader finds.
 
-use std::{iter, path::Path, sync::Arc};
+use std::{collections::BTreeMap, iter, path::Path, sync::Arc};
 
 use oxc_ast_visit::utf8_to_utf16::Utf8ToUtf16;
 use oxc_diagnostics::OxcDiagnostic;
@@ -13,6 +13,7 @@ use oxc_span::Span;
 use crate::{
     AllowWarnDeny, ExternalOptionsId, ExternalRuleId, LanguagePluginBinding, Linter,
     config::LintConfig,
+    disable_directives::{DisableDirectives, DisableDirectivesBuilder},
     external_linter::{
         GlobalsAndEnvs, LintFileFailure, LintLanguageFileArgs, LintLanguageFileOutput,
         MarkupComment, MarkupReference, convert_and_merge_js_fixes,
@@ -32,9 +33,60 @@ pub struct LanguageFileResult {
     /// Errors of the plugin itself have no rule name.
     pub diagnostics: Vec<(Message, Option<String>)>,
     /// References from the markup to top-level script variables.
-    pub markup_references: Vec<MarkupReference>,
+    /// `None` if the plugin does not return them.
+    pub markup_references: Option<Vec<MarkupReference>>,
     /// Comments in the markup.
     pub markup_comments: Vec<MarkupComment>,
+}
+
+impl LanguageFileResult {
+    /// Build the disable directives of the markup comments, such as `<!-- eslint-disable -->`.
+    ///
+    /// A block directive (`eslint-disable` and `eslint-enable`) applies until the `scopeEnd` of
+    /// its comment, or until the end of the file. So comments are built in groups by `scopeEnd`.
+    /// Returns `None` if there are no markup comments.
+    pub(crate) fn markup_directives(
+        &self,
+        source_text: &str,
+        respect_eslint_disable_directives: bool,
+    ) -> Option<DisableDirectives> {
+        if self.markup_comments.is_empty() {
+            return None;
+        }
+        #[expect(clippy::cast_possible_truncation)]
+        let source_len = source_text.len() as u32;
+
+        let mut groups = BTreeMap::<u32, Vec<(Span, Span)>>::new();
+        for comment in &self.markup_comments {
+            let scope_end = comment.scope_end.unwrap_or(source_len).min(source_len);
+            let Some(comment_text) = source_text.get(comment.start as usize..comment.end as usize)
+            else {
+                continue;
+            };
+            // The text of the comment, without its delimiters (such as `<!--` and `-->`)
+            let Some(text_start) = comment_text.find(comment.text.as_str()) else { continue };
+            if comment.end > scope_end {
+                continue;
+            }
+            #[expect(clippy::cast_possible_truncation)]
+            let text_start = comment.start + text_start as u32;
+            #[expect(clippy::cast_possible_truncation)]
+            let text_span = Span::new(text_start, text_start + comment.text.len() as u32);
+            groups
+                .entry(scope_end)
+                .or_default()
+                .push((Span::new(comment.start, comment.end), text_span));
+        }
+
+        let groups = groups.into_iter().map(|(scope_end, mut comments)| {
+            comments.sort_unstable_by_key(|(span, _)| span.start);
+            let directives = DisableDirectivesBuilder::new()
+                .with_respect_eslint_disable_directives(respect_eslint_disable_directives)
+                .build_markup(&source_text[..scope_end as usize], comments);
+            (directives, 0)
+        });
+        Some(DisableDirectives::merge_sections(groups))
+    }
 }
 
 impl Linter {
@@ -197,15 +249,17 @@ impl Linter {
             }
         }
 
-        result.markup_references = markup_references
-            .into_iter()
-            .map(|mut reference| {
-                let span = to_utf8_span(reference.start, reference.end);
-                reference.start = span.start;
-                reference.end = span.end;
-                reference
-            })
-            .collect();
+        result.markup_references = markup_references.map(|references| {
+            references
+                .into_iter()
+                .map(|mut reference| {
+                    let span = to_utf8_span(reference.start, reference.end);
+                    reference.start = span.start;
+                    reference.end = span.end;
+                    reference
+                })
+                .collect()
+        });
         result.markup_comments = markup_comments
             .into_iter()
             .map(|mut comment| {
@@ -218,5 +272,68 @@ impl Linter {
             .collect();
 
         Some(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use oxc_span::Span;
+
+    use super::LanguageFileResult;
+    use crate::external_linter::MarkupComment;
+
+    #[expect(clippy::cast_possible_truncation)]
+    fn comment(source_text: &str, comment: &str, scope_end: Option<&str>) -> MarkupComment {
+        let start = source_text.find(comment).unwrap() as u32;
+        MarkupComment {
+            start,
+            end: start + comment.len() as u32,
+            text: comment["<!--".len()..comment.len() - "-->".len()].to_string(),
+            scope_end: scope_end.map(|end| (source_text.find(end).unwrap() + end.len()) as u32),
+        }
+    }
+
+    #[expect(clippy::cast_possible_truncation)]
+    fn span_of(source_text: &str, needle: &str) -> Span {
+        let start = source_text.rfind(needle).unwrap() as u32;
+        Span::sized(start, needle.len() as u32)
+    }
+
+    #[test]
+    fn block_markup_directives_stop_at_their_scope_end() {
+        let source_text = "<template>\n<!-- eslint-disable no-console -->\n<a></a>\n</template>\n<!-- eslint-disable no-debugger -->\n<script>\nx;\n</script>\n<script setup>\ny;\n</script>\n<!-- eslint-disable no-alert -->\nz;\n";
+        let result = LanguageFileResult {
+            markup_comments: vec![
+                comment(source_text, "<!-- eslint-disable no-console -->", Some("</template>")),
+                comment(source_text, "<!-- eslint-disable no-debugger -->", Some("</script>")),
+                comment(source_text, "<!-- eslint-disable no-alert -->", None),
+            ],
+            ..LanguageFileResult::default()
+        };
+        let directives = result.markup_directives(source_text, true).unwrap();
+
+        // `no-console` covers the template only
+        assert!(directives.contains("no-console", span_of(source_text, "<a></a>")));
+        assert!(!directives.contains("no-console", span_of(source_text, "x;")));
+        // `no-debugger` covers the first `<script>` only
+        assert!(directives.contains("no-debugger", span_of(source_text, "x;")));
+        assert!(!directives.contains("no-debugger", span_of(source_text, "y;")));
+        // `no-alert` has no `scopeEnd`, so it covers the rest of the file
+        assert!(directives.contains("no-alert", span_of(source_text, "z;")));
+    }
+
+    #[test]
+    fn markup_directives_are_ignored_if_disable_directives_are_not_respected() {
+        let source_text = "<!-- eslint-disable-next-line no-console -->\n<a></a>\n";
+        let result = LanguageFileResult {
+            markup_comments: vec![comment(
+                source_text,
+                "<!-- eslint-disable-next-line no-console -->",
+                None,
+            )],
+            ..LanguageFileResult::default()
+        };
+        let directives = result.markup_directives(source_text, false).unwrap();
+        assert!(!directives.contains("no-console", span_of(source_text, "<a></a>")));
     }
 }

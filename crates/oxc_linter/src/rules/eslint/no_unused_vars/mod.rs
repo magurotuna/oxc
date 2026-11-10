@@ -97,6 +97,10 @@ declare_oxc_lint!(
     /// not support parsing template syntax, this rule cannot tell if a variable
     /// is used or unused in a Vue / Svelte / Astro file.
     ///
+    /// If a language plugin parses a Vue, Svelte, or Astro file and returns
+    /// `markupReferences`, this rule checks the file. A top-level variable that
+    /// the markup reads, or uses as a type, counts as used.
+    ///
     /// #### Exported
     ///
     /// The original ESLint rule recognizes `/* exported variableName */`
@@ -241,11 +245,12 @@ impl Rule for NoUnusedVars {
         // ignore .d.ts and vue/svelte/astro files.
         // 1. declarations have side effects (they get merged together)
         // 2. vue/svelte/astro scripts declare variables that get used in the template, which
-        //    we can't detect
+        //    we can't detect, unless a language plugin returns the markup references
         !ctx.source_type().is_typescript_definition()
-            && !ctx
-                .file_extension()
-                .is_some_and(|ext| ext == "vue" || ext == "svelte" || ext == "astro")
+            && (ctx.has_markup_references()
+                || !ctx
+                    .file_extension()
+                    .is_some_and(|ext| ext == "vue" || ext == "svelte" || ext == "astro"))
     }
 }
 
@@ -262,7 +267,9 @@ impl NoUnusedVars {
             return;
         }
 
-        let is_used = symbol.is_exported(exported_names) || symbol.has_usages(self);
+        let is_used = symbol.is_exported(exported_names)
+            || symbol.has_usages(self)
+            || ctx.markup_use(symbol.id()).is_some_and(|markup_use| markup_use.read);
 
         match (is_used, *is_ignored) {
             // used, ignored because variable name matches one of several

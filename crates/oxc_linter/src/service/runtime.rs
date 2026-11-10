@@ -879,14 +879,14 @@ impl Runtime {
                             if has_sections {
                                 return;
                             }
-                            let Some(messages) = me.linter.run_language_file_without_scripts(
+                            let Some(result) = me.linter.run_language_file_without_scripts(
                                 path,
                                 dep.source_text,
                                 rule_timing_store,
                             ) else {
                                 return;
                             };
-                            (messages, None)
+                            result
                         } else {
                             me.linter.run_with_disable_directives::<TIMINGS>(
                                 path,
@@ -1037,13 +1037,13 @@ impl Runtime {
                                     if has_sections {
                                         return;
                                     }
-                                    let Some(messages) = me
+                                    let Some(result) = me
                                         .linter
                                         .run_language_file_without_scripts(path, source_text, None)
                                     else {
                                         return;
                                     };
-                                    (messages, None)
+                                    result
                                 } else {
                                     me.linter.run_with_disable_directives::<false>(
                                         path,
