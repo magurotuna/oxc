@@ -87,9 +87,12 @@ impl ExternalPluginStore {
         self.is_enabled
     }
 
-    /// Returns `true` if no external plugins have been loaded.
+    /// Returns `true` if no external plugins have been loaded: no JS plugins and no language plugins.
+    ///
+    /// A language plugin needs the external linter even without JS plugin rules, because it returns
+    /// the markup references and comments of its files.
     pub fn is_empty(&self) -> bool {
-        self.plugins.is_empty()
+        self.plugins.is_empty() && self.language_plugins.is_empty()
     }
 
     pub fn is_plugin_registered(&self, plugin_path: &Path) -> bool {
