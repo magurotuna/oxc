@@ -1,0 +1,2 @@
+debugger;
+const c = "<bad>";

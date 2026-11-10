@@ -42,6 +42,7 @@ pub fn run() -> Result<(), io::Error> {
 
         let _ = linter.run_with_disable_directives::<true>(
             path,
+            &file.source_text,
             vec![ContextSubHost::new(
                 semantic,
                 Arc::clone(&module_record),

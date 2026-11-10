@@ -7,7 +7,7 @@ use oxc_ast_visit::utf8_to_utf16::Utf8ToUtf16;
 use oxc_span::Span;
 
 use crate::{
-    config::{OxlintEnv, OxlintGlobals},
+    config::{LintConfig, OxlintEnv, OxlintGlobals},
     context::ContextHost,
     fixer::{CompositeFix, Fix, MergeFixesError},
 };
@@ -91,7 +91,7 @@ pub struct LintLanguageFileArgs {
     pub plugin_id: u32,
     /// Options of the language plugin entry, as JSON.
     pub plugin_options_json: Arc<str>,
-    /// Source text of the whole file.
+    /// Source text of the whole file, without a BOM.
     pub source_text: String,
     /// Rule IDs of the JS plugin rules to run.
     pub rule_ids: Vec<u32>,
@@ -413,7 +413,6 @@ pub struct ExternalLinter {
 #[derive(Clone)]
 pub struct ExternalLanguagePluginCbs {
     pub(crate) load_language_plugin: ExternalLinterLoadLanguagePluginCb,
-    #[expect(dead_code, reason = "files are not linted with language plugins yet")]
     pub(crate) lint_language_file: ExternalLinterLintLanguageFileCb,
 }
 
@@ -467,6 +466,10 @@ pub struct GlobalsAndEnvs<'c> {
 impl<'c> GlobalsAndEnvs<'c> {
     pub fn new(ctx_host: &'c ContextHost<'_>) -> Self {
         Self { globals: ctx_host.globals(), envs: EnabledEnvs(ctx_host.env()) }
+    }
+
+    pub fn from_config(config: &'c LintConfig) -> Self {
+        Self { globals: &config.globals, envs: EnabledEnvs(&config.env) }
     }
 }
 

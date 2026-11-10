@@ -840,6 +840,7 @@ impl Runtime {
 
                         let respect_eslint_disable_directives =
                             me.linter.respect_eslint_disable_directives();
+                        let has_sections = !module_to_lint.section_module_records.is_empty();
                         let context_sub_hosts: Vec<ContextSubHost<'_>> = module_to_lint
                             .section_module_records
                             .into_iter()
@@ -871,18 +872,31 @@ impl Runtime {
                             })
                             .collect();
 
-                        if context_sub_hosts.is_empty() {
-                            return;
-                        }
-
-                        let (mut messages, disable_directives) =
+                        let (mut messages, disable_directives) = if context_sub_hosts.is_empty() {
+                            // A file without script sections, such as a Vue file with only a
+                            // `<template>`, is linted only if a language plugin parses it.
+                            // If all its sections have syntax errors, it is not linted.
+                            if has_sections {
+                                return;
+                            }
+                            let Some(messages) = me.linter.run_language_file_without_scripts(
+                                path,
+                                dep.source_text,
+                                rule_timing_store,
+                            ) else {
+                                return;
+                            };
+                            (messages, None)
+                        } else {
                             me.linter.run_with_disable_directives::<TIMINGS>(
                                 path,
+                                dep.source_text,
                                 context_sub_hosts,
                                 allocator_guard,
                                 me.js_allocator_pool(),
                                 rule_timing_store,
-                            );
+                            )
+                        };
 
                         // Store the disable directives for this file
                         if let Some(mut disable_directives) = disable_directives {
@@ -976,7 +990,7 @@ impl Runtime {
                 |me, mut module_to_lint| {
                     module_to_lint.content.with_dependent_mut(
                         |allocator_guard,
-                         ModuleContentDependent { source_text: _, section_contents }| {
+                         ModuleContentDependent { source_text, section_contents }| {
                             assert_eq!(
                                 module_to_lint.section_module_records.len(),
                                 section_contents.len()
@@ -984,6 +998,7 @@ impl Runtime {
 
                             let respect_eslint_disable_directives =
                                 me.linter.respect_eslint_disable_directives();
+                            let has_sections = !module_to_lint.section_module_records.is_empty();
                             let context_sub_hosts: Vec<ContextSubHost<'_>> = module_to_lint
                                 .section_module_records
                                 .into_iter()
@@ -1013,20 +1028,32 @@ impl Runtime {
                                 })
                                 .collect();
 
-                            if context_sub_hosts.is_empty() {
-                                return;
-                            }
-
                             let path = Path::new(&module_to_lint.path);
 
                             let (section_messages, disable_directives) =
-                                me.linter.run_with_disable_directives::<false>(
-                                    path,
-                                    context_sub_hosts,
-                                    allocator_guard,
-                                    me.js_allocator_pool(),
-                                    None,
-                                );
+                                if context_sub_hosts.is_empty() {
+                                    // Same as in `run_impl`: a file without script sections is
+                                    // linted only if a language plugin parses it.
+                                    if has_sections {
+                                        return;
+                                    }
+                                    let Some(messages) = me
+                                        .linter
+                                        .run_language_file_without_scripts(path, source_text, None)
+                                    else {
+                                        return;
+                                    };
+                                    (messages, None)
+                                } else {
+                                    me.linter.run_with_disable_directives::<false>(
+                                        path,
+                                        source_text,
+                                        context_sub_hosts,
+                                        allocator_guard,
+                                        me.js_allocator_pool(),
+                                        None,
+                                    )
+                                };
 
                             if let Some(disable_directives) = disable_directives {
                                 me.disable_directives_map

@@ -38,6 +38,7 @@ mod external_plugin_store;
 mod fixer;
 mod frameworks;
 mod globals;
+mod language_file;
 mod module_graph_visitor;
 mod module_record;
 mod options;
@@ -336,10 +337,13 @@ impl Linter {
         context_sub_hosts: Vec<ContextSubHost<'a>>,
         allocator: &'a Allocator,
     ) -> Vec<Message> {
-        self.run_impl::<false>(path, context_sub_hosts, allocator, None, None, false).0
+        self.run_impl::<false>(path, None, context_sub_hosts, allocator, None, None, false).0
     }
 
     /// Same as `run` but also returns the disable directives for the file
+    ///
+    /// `source_text` is the source text of the whole file. If a language plugin parses the file,
+    /// JS plugin rules run on the plugin's syntax tree of the whole file, instead of on each section.
     ///
     /// For files with more than one section (Vue, Svelte, and Astro files), directives are returned
     /// only if [`LintOptions::type_aware_partial_loader_files`] is set. Then they have spans in the
@@ -357,6 +361,7 @@ impl Linter {
     pub fn run_with_disable_directives<'a, const TIMINGS: bool>(
         &self,
         path: &Path,
+        source_text: &'a str,
         context_sub_hosts: Vec<ContextSubHost<'a>>,
         allocator: &'a Allocator,
         js_allocator_pool: Option<&AllocatorPool>,
@@ -364,6 +369,7 @@ impl Linter {
     ) -> (Vec<Message>, Option<DisableDirectives>) {
         self.run_impl::<TIMINGS>(
             path,
+            Some(source_text),
             context_sub_hosts,
             allocator,
             js_allocator_pool,
@@ -374,9 +380,11 @@ impl Linter {
 
     /// If `return_directives` is `false`, unused directives in files with more than one section
     /// are reported here, and no directives are returned for those files.
+    #[expect(clippy::too_many_arguments)]
     fn run_impl<'a, const TIMINGS: bool>(
         &self,
         path: &Path,
+        source_text: Option<&'a str>,
         context_sub_hosts: Vec<ContextSubHost<'a>>,
         allocator: &'a Allocator,
         js_allocator_pool: Option<&AllocatorPool>,
@@ -399,6 +407,16 @@ impl Linter {
         react_compiler_env_options.report_todo_and_invariant = rules
             .iter()
             .any(|(rule, _)| matches!(rule, RuleEnum::ReactTodo(_) | RuleEnum::ReactInvariant(_)));
+
+        // If a language plugin parses the file, run JS plugin rules on the plugin's syntax tree first.
+        // Their reports are added after the native rules have run.
+        let (language_file, language_plugin_error) = self.lint_with_language_plugin(
+            path,
+            source_text,
+            &external_rules,
+            &config,
+            rule_timing_store,
+        );
 
         let mut ctx_host = Rc::new(
             ContextHost::new(path, context_sub_hosts, allocator, self.options, config)
@@ -513,21 +531,30 @@ impl Linter {
             }
         }
 
-        // Pass 2: Run JS plugin rules on every sub host in turn
-        ctx_host.rewind_sub_hosts();
-        loop {
-            self.run_external_rules(
-                &external_rules,
-                path,
-                &mut ctx_host,
-                allocator,
-                js_allocator_pool,
-                rule_timing_store,
-            );
+        // Pass 2: Run JS plugin rules on every sub host in turn.
+        // If a language plugin parsed the file, JS plugin rules have already run on the whole file,
+        // so add their reports instead.
+        if let Some(language_file) = language_file {
+            ctx_host.add_language_file_diagnostics(language_file.diagnostics);
+        } else {
+            ctx_host.rewind_sub_hosts();
+            loop {
+                self.run_external_rules(
+                    &external_rules,
+                    path,
+                    &mut ctx_host,
+                    allocator,
+                    js_allocator_pool,
+                    rule_timing_store,
+                );
 
-            if !ctx_host.next_sub_host() {
-                break;
+                if !ctx_host.next_sub_host() {
+                    break;
+                }
             }
+        }
+        if let Some(error) = language_plugin_error {
+            ctx_host.add_language_file_diagnostics(vec![(error, None)]);
         }
 
         // Partial loader files (Vue/Astro/Svelte) return their directives only if the type-aware
@@ -578,6 +605,79 @@ impl Linter {
             );
         }
         result
+    }
+
+    /// Lint a file that has no script sections, such as a Vue file with only a `<template>`,
+    /// with its language plugin.
+    ///
+    /// Native rules do not run, because there is no script. Returns `None` if no language plugin
+    /// parses the file.
+    pub fn run_language_file_without_scripts(
+        &self,
+        path: &Path,
+        source_text: &str,
+        rule_timing_store: Option<&RuleTimingStore>,
+    ) -> Option<Vec<Message>> {
+        let ResolvedLinterState { external_rules, config, .. } = self.config.resolve(path);
+        let (language_file, error) = self.lint_with_language_plugin(
+            path,
+            Some(source_text),
+            &external_rules,
+            &config,
+            rule_timing_store,
+        );
+        if language_file.is_none() && error.is_none() {
+            return None;
+        }
+        let mut messages: Vec<Message> = language_file
+            .into_iter()
+            .flat_map(|language_file| language_file.diagnostics)
+            .map(|(message, _rule_name)| message)
+            .collect();
+        messages.extend(error);
+        Some(messages)
+    }
+
+    /// Run the JS plugin rules of a file on the syntax tree of its language plugin.
+    ///
+    /// Returns the result if a language plugin parsed the file. Also returns an error message if more
+    /// than one language plugin matches the file. Then the file is linted without a language plugin.
+    fn lint_with_language_plugin(
+        &self,
+        path: &Path,
+        source_text: Option<&str>,
+        external_rules: &[(ExternalRuleId, ExternalOptionsId, AllowWarnDeny)],
+        config: &LintConfig,
+        rule_timing_store: Option<&RuleTimingStore>,
+    ) -> (Option<language_file::LanguageFileResult>, Option<Message>) {
+        let Some(source_text) = source_text else { return (None, None) };
+        if self.external_linter.as_ref().is_none_or(|linter| linter.language_plugins.is_none()) {
+            return (None, None);
+        }
+        match self.config.resolve_language_plugin(path) {
+            LanguagePluginMatch::None => (None, None),
+            LanguagePluginMatch::One(binding) => (
+                self.lint_language_file(
+                    path,
+                    source_text,
+                    binding,
+                    external_rules,
+                    config,
+                    self.options.fix,
+                    rule_timing_store,
+                ),
+                None,
+            ),
+            LanguagePluginMatch::Conflict(names) => {
+                let names = names.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>();
+                let message = format!(
+                    "More than one language plugin matches this file: {}.\nFile path: {}\nUse `pattern` in `languagePlugins` to select the files of each plugin.",
+                    names.join(", "),
+                    path.to_string_lossy(),
+                );
+                (None, Some(Message::new(OxcDiagnostic::error(message), PossibleFixes::None)))
+            }
+        }
     }
 
     #[cfg(all(target_pointer_width = "64", target_endian = "little"))]

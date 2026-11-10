@@ -1,0 +1,10 @@
+{
+  "languagePlugins": [{ "name": "./language_plugin.ts", "options": { "flag": true } }],
+  "jsPlugins": ["./rules.ts"],
+  "categories": { "correctness": "off" },
+  "rules": {
+    "no-debugger": "error",
+    "markup-rules/no-bad-element": "error",
+    "markup-rules/file-info": "warn"
+  }
+}

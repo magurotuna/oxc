@@ -32,6 +32,7 @@ import { settings, initSettings } from "./settings.ts";
 import visitorKeys from "../generated/keys.ts";
 import { debugAssertIsNonNull } from "../utils/asserts.ts";
 import { envs, globals, initGlobals } from "./globals.ts";
+import { languageFile, LANGUAGE_SOURCE_CODE } from "./language_source_code.ts";
 import { version as packageVersion } from "../../package.json" with { type: "json" };
 
 import type { Globals, Envs } from "./globals.ts";
@@ -296,6 +297,54 @@ Object.freeze(LANGUAGE_OPTIONS);
  */
 export type LanguageOptions = Readonly<typeof LANGUAGE_OPTIONS>;
 
+// Singleton object for language options of files that a language plugin parsed.
+const LANGUAGE_FILE_OPTIONS = Object.freeze({
+  /**
+   * Source type of the file being linted, from the plugin's syntax tree. `"module"` if the tree has none.
+   */
+  get sourceType(): ModuleKind {
+    debugAssertIsNonNull(languageFile);
+    const { sourceType } = languageFile.loaded.ast;
+    return sourceType === "script" || sourceType === "commonjs" ? sourceType : "module";
+  },
+
+  /**
+   * ECMAScript version of the file being linted.
+   */
+  ecmaVersion: ECMA_VERSION,
+
+  /**
+   * Parser used to parse the file being linted.
+   */
+  parser: PARSER,
+
+  /**
+   * Options of the `languagePlugins` entry of the file.
+   */
+  get parserOptions(): Readonly<Record<string, unknown>> {
+    debugAssertIsNonNull(languageFile);
+    return languageFile.parserOptions;
+  },
+
+  /**
+   * Globals defined for the file being linted.
+   */
+  get globals(): Readonly<Globals> {
+    if (globals === null) initGlobals();
+    debugAssertIsNonNull(globals);
+    return globals;
+  },
+
+  /**
+   * Environments defined for the file being linted.
+   */
+  get env(): Readonly<Envs> {
+    if (envs === null) initGlobals();
+    debugAssertIsNonNull(envs);
+    return envs;
+  },
+});
+
 // Singleton object for file-specific properties.
 //
 // Only one file is linted at a time, so we reuse a single object for all files.
@@ -394,6 +443,8 @@ const FILE_CONTEXT = Object.freeze({
   get sourceCode(): SourceCode {
     // Note: If we change this implementation, also change `getSourceCode` method below
     if (filePath === null) throw new Error("Cannot access `context.sourceCode` in `createOnce`");
+    // A file that a language plugin parsed has its own `SourceCode`, with the plugin's syntax tree
+    if (languageFile !== null) return LANGUAGE_SOURCE_CODE as unknown as SourceCode;
     return SOURCE_CODE;
   },
 
@@ -404,6 +455,7 @@ const FILE_CONTEXT = Object.freeze({
    */
   getSourceCode(): SourceCode {
     if (filePath === null) throw new Error("Cannot call `context.getSourceCode` in `createOnce`");
+    if (languageFile !== null) return LANGUAGE_SOURCE_CODE as unknown as SourceCode;
     return SOURCE_CODE;
   },
 
@@ -414,6 +466,7 @@ const FILE_CONTEXT = Object.freeze({
     if (filePath === null) {
       throw new Error("Cannot access `context.languageOptions` in `createOnce`");
     }
+    if (languageFile !== null) return LANGUAGE_FILE_OPTIONS as unknown as LanguageOptions;
     return LANGUAGE_OPTIONS;
   },
 
@@ -447,6 +500,7 @@ const FILE_CONTEXT = Object.freeze({
    */
   get parserOptions(): Record<string, unknown> {
     if (filePath === null) throw new Error("Cannot access `context.parserOptions` in `createOnce`");
+    if (languageFile !== null) return languageFile.parserOptions;
     return PARSER_OPTIONS;
   },
 

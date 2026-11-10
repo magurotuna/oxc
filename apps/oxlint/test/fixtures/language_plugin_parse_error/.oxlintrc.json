@@ -1,0 +1,6 @@
+{
+  "languagePlugins": ["./throwing_plugin.ts"],
+  "jsPlugins": ["../language_plugin_lint/rules.ts"],
+  "categories": { "correctness": "off" },
+  "rules": { "no-debugger": "error", "markup-rules/no-bad-element": "error" }
+}

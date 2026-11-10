@@ -9,7 +9,7 @@ use std::{
 use oxc_allocator::{Allocator, ArenaBox};
 use oxc_parser::Token;
 use oxc_semantic::Semantic;
-use oxc_span::SourceType;
+use oxc_span::{SourceType, Span};
 
 use crate::{
     AllowWarnDeny, FrameworkFlags,
@@ -359,6 +359,38 @@ impl<'a> ContextHost<'a> {
             diagnostic.move_offset(self.current_sub_host().source_text_offset);
         }
         self.diagnostics.borrow_mut().push(diagnostic);
+    }
+
+    /// Add the reports of JS plugin rules that ran on the syntax tree of a language plugin.
+    ///
+    /// Each item is a report with spans in the whole file, and the `plugin/rule` name of its rule
+    /// (`None` for errors that are not reports of a rule). A disable directive applies to a report
+    /// if the directive is in the section (`<script>` block) where the report starts, as for the
+    /// reports of native rules.
+    pub(crate) fn add_language_file_diagnostics(
+        &self,
+        diagnostics: Vec<(Message, Option<String>)>,
+    ) {
+        let mut out = self.diagnostics.borrow_mut();
+        for (message, rule_name) in diagnostics {
+            if let Some(rule_name) = &rule_name {
+                let Span { start, end, .. } = message.span;
+                let section = self.sub_hosts.iter().find(|sub_host| {
+                    let offset = sub_host.source_text_offset;
+                    #[expect(clippy::cast_possible_truncation)]
+                    let section_end = offset + sub_host.source_text().len() as u32;
+                    start >= offset && start <= section_end
+                });
+                if let Some(section) = section {
+                    let offset = section.source_text_offset;
+                    let span = Span::new(start - offset, end.saturating_sub(offset));
+                    if section.disable_directives.contains(rule_name, span) {
+                        continue;
+                    }
+                }
+            }
+            out.push(message);
+        }
     }
 
     // Append a list of diagnostics. Only used in report_unused_directives.

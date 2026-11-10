@@ -1,0 +1,8 @@
+{
+  "languagePlugins": [
+    { "name": "../language_plugin_lint/language_plugin.ts", "pattern": "files/src/**/*.vue" }
+  ],
+  "jsPlugins": ["../language_plugin_lint/rules.ts"],
+  "categories": { "correctness": "off" },
+  "rules": { "no-debugger": "error", "markup-rules/no-bad-element": "error" }
+}

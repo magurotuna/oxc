@@ -57,6 +57,17 @@ export function setupSourceForFile(bufferInput: BufferWithArrays, hasBOMInput: b
 }
 
 /**
+ * Set up the source text of a file that a language plugin parsed.
+ * Such a file has no buffer: only the source text is used, for example to convert locations.
+ * @param text - Source text of the file
+ */
+export function setupSourceTextForLanguageFile(text: string): void {
+  buffer = null;
+  hasBOM = false;
+  sourceText = text;
+}
+
+/**
  * Decode source text from buffer.
  */
 export function initSourceText(): void {

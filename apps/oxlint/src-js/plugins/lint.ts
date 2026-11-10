@@ -10,6 +10,8 @@ import { typeAssertIs, debugAssert, debugAssertIsNonNull } from "../utils/assert
 import { getErrorMessage } from "../utils/utils.ts";
 import { setGlobalsForFile, resetGlobals } from "./globals.ts";
 import { resetWeakMaps } from "./weak_map.ts";
+import { resetLanguageFile } from "./language_source_code.ts";
+import { resetLanguageVisitor } from "./language_visitor.ts";
 import { switchWorkspace } from "./workspace.ts";
 import { timeCall, wrapTimedFunction } from "./timing.ts";
 import {
@@ -35,7 +37,7 @@ import type { RuleTiming } from "./timing.ts";
 export const buffers: (BufferWithArrays | null)[] = [];
 
 // Array of `after` hooks to run after traversal. This array reused for every file.
-const afterHooks: AfterHook[] = [];
+export const afterHooks: AfterHook[] = [];
 
 // Reusable property descriptor for updating `options` value on rule context objects.
 // `value` is updated before each call. Other attributes are omitted to retain existing values.
@@ -306,7 +308,7 @@ export function lintFileImpl(
  *
  * @param shouldThrowIfError - `true` if any errors thrown in after hooks should be re-thrown
  */
-function runAfterHooks(shouldThrowIfError: boolean) {
+export function runAfterHooks(shouldThrowIfError: boolean): void {
   const afterHooksLen = afterHooks.length;
   if (afterHooksLen === 0) return;
 
@@ -339,6 +341,7 @@ function runAfterHooks(shouldThrowIfError: boolean) {
 export function resetFile() {
   resetFileContext();
   resetSourceAndAst();
+  resetLanguageFile();
   resetSettings();
   resetGlobals();
   resetWeakMaps();
@@ -363,6 +366,7 @@ function clearStateAfterError() {
   // So better to use the existing functions, rather than bloat the package with more code which should never run.
   finalizeCompiledVisitor();
   resetCompiledVisitor();
+  resetLanguageVisitor();
 
   diagnostics.length = 0;
   ancestors.length = 0;
