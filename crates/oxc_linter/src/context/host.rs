@@ -483,12 +483,12 @@ impl<'a> ContextHost<'a> {
     /// They apply after the directives of the sections.
     pub(crate) fn add_language_file_diagnostics(
         &self,
-        diagnostics: Vec<(Message, Option<String>)>,
+        diagnostics: Vec<(Message, Vec<String>)>,
         markup_directives: Option<&DisableDirectives>,
     ) {
         let mut out = self.diagnostics.borrow_mut();
-        for (message, rule_name) in diagnostics {
-            if let Some(rule_name) = &rule_name {
+        for (message, rule_names) in diagnostics {
+            if !rule_names.is_empty() {
                 let Span { start, end, .. } = message.span;
                 let section = self.sub_hosts.iter().find(|sub_host| {
                     let offset = sub_host.source_text_offset;
@@ -499,12 +499,12 @@ impl<'a> ContextHost<'a> {
                 if let Some(section) = section {
                     let offset = section.source_text_offset;
                     let span = Span::new(start - offset, end.saturating_sub(offset));
-                    if section.disable_directives.contains(rule_name, span) {
+                    if section.disable_directives.contains_any(&rule_names, span) {
                         continue;
                     }
                 }
                 if markup_directives
-                    .is_some_and(|directives| directives.contains(rule_name, message.span))
+                    .is_some_and(|directives| directives.contains_any(&rule_names, message.span))
                 {
                     continue;
                 }

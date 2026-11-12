@@ -115,6 +115,9 @@ interface PluginDetails {
   offset: number;
   // Names of rules within this plugin, in same order as in `registeredRules`
   ruleNames: string[];
+  // Normalized `meta.name` of the plugin, or `null` if it does not define one.
+  // With an alias, this can differ from `name`. Disable directives can use either name.
+  metaName: string | null;
 }
 
 /**
@@ -325,7 +328,18 @@ export function registerPlugin(
 
   registeredPluginNames.add(pluginName);
 
-  return { name: pluginName, offset, ruleNames };
+  return { name: pluginName, offset, ruleNames, metaName: getPluginMetaName(plugin) };
+}
+
+/**
+ * Get the normalized name that a plugin defines in `meta.name`.
+ *
+ * @param plugin - Plugin object
+ * @returns Normalized plugin name, or `null` if `plugin.meta.name` is not a string
+ */
+function getPluginMetaName(plugin: Plugin): string | null {
+  const pluginMetaName = plugin.meta?.name;
+  return typeof pluginMetaName === "string" ? normalizePluginName(pluginMetaName) : null;
 }
 
 /**

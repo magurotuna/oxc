@@ -704,6 +704,18 @@ impl ConfigStoreBuilder {
             return Ok(());
         }
 
+        // The normalized package name, if the specifier is not relative
+        let package_plugin_name = if let Some(pkg) = resolved.package_json()
+            && let Some(package_name) = pkg.name()
+            && !matches!(
+                Path::new(plugin_specifier).components().next(),
+                Some(PathComponent::CurDir | PathComponent::ParentDir)
+            ) {
+            Some(normalize_plugin_name(package_name).into_owned())
+        } else {
+            None
+        };
+
         // Get plugin name.
         // Use alias if provided.
         // Otherwise use package name if the specifier is not relative, and normalize it.
@@ -719,16 +731,8 @@ impl ConfigStoreBuilder {
                 });
             }
             Some(alias_name.to_string())
-        } else if let Some(pkg) = resolved.package_json()
-            && let Some(package_name) = pkg.name()
-            && !matches!(
-                Path::new(plugin_specifier).components().next(),
-                Some(PathComponent::CurDir | PathComponent::ParentDir)
-            )
-        {
-            Some(normalize_plugin_name(package_name).into_owned())
         } else {
-            None
+            package_plugin_name.clone()
         };
 
         if let Some(plugin_name) = &plugin_name
@@ -754,11 +758,15 @@ impl ConfigStoreBuilder {
             error,
         })?;
         let plugin_name = result.name;
+        // The name of the plugin itself, for disable directives: its normalized `meta.name`,
+        // or else its normalized package name. It differs from `plugin_name` only with an alias.
+        let canonical_name = result.meta_name.or(package_plugin_name);
 
         if LintPlugins::try_from(plugin_name.as_str()).is_err() {
             external_plugin_store.register_plugin(
                 plugin_path,
                 plugin_name,
+                canonical_name,
                 result.offset,
                 result.rule_names,
             );

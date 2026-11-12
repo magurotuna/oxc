@@ -517,6 +517,11 @@ impl ConfigStore {
         self.external_plugin_store.resolve_plugin_rule_names(external_rule_id)
     }
 
+    /// See [`ExternalPluginStore::directive_rule_names`].
+    pub(crate) fn directive_rule_names(&self, external_rule_id: ExternalRuleId) -> Vec<String> {
+        self.external_plugin_store.directive_rule_names(external_rule_id)
+    }
+
     pub fn external_plugin_store(&self) -> &ExternalPluginStore {
         &self.external_plugin_store
     }
@@ -1005,6 +1010,7 @@ mod test {
         external_plugin_store.register_plugin(
             "./plugin.js".into(),
             "custom".into(),
+            None,
             0,
             vec!["no-debugger".into()],
         );
@@ -1400,6 +1406,7 @@ mod test {
         store.register_plugin(
             PathBuf::from("path/to/custom"),
             "custom".to_string(),
+            None,
             0,
             vec!["my-rule".to_string()],
         );

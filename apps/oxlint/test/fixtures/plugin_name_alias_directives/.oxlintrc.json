@@ -1,0 +1,17 @@
+{
+  "languagePlugins": ["../language_plugin_markup/language_plugin.ts"],
+  "jsPlugins": [
+    // `meta.name` is `eslint-plugin-foo`, so directives can name the rules `foojs/...` or `foo/...`
+    { "name": "foojs", "specifier": "./plugins/foo.ts" },
+    // No `meta.name`, and the package name is `eslint-plugin-bar`,
+    // so directives can name the rules `barjs/...` or `bar/...`
+    { "name": "barjs", "specifier": "eslint-plugin-bar" }
+  ],
+  "categories": { "correctness": "off" },
+  "rules": {
+    "foojs/no-var": "error",
+    "foojs/no-todo": "error",
+    "foojs/no-bad-element": "error",
+    "barjs/no-debugger": "error"
+  }
+}

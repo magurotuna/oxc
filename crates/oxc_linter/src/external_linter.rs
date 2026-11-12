@@ -204,6 +204,10 @@ pub struct LoadPluginResult {
     pub name: String,
     pub offset: usize,
     pub rule_names: Vec<String>,
+    /// The normalized `meta.name` of the plugin, if it defines one. With an alias, this can
+    /// differ from `name`.
+    #[serde(default)]
+    pub meta_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

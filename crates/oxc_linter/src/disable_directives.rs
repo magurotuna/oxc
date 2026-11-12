@@ -449,6 +449,14 @@ impl DisableDirectives {
         self.used_disable_comments.borrow_mut().push(disable_directive);
     }
 
+    /// Returns `true` if a directive covers a report of a rule that has more than one name, such
+    /// as a rule of a JS plugin that is loaded under an alias
+    /// (see [`crate::ExternalPluginStore::directive_rule_names`]).
+    /// Each directive that covers the report is marked as used, also if another name matches too.
+    pub fn contains_any(&self, rule_names: &[String], span: Span) -> bool {
+        rule_names.iter().fold(false, |covered, rule_name| self.contains(rule_name, span) | covered)
+    }
+
     pub fn contains(&self, rule_name: &str, span: Span) -> bool {
         // For `eslint-disable-next-line` and `eslint-disable-line` directives, we only check
         // if the diagnostic's starting position falls within the disabled interval.

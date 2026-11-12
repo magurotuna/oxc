@@ -572,7 +572,7 @@ impl Linter {
             }
         }
         if let Some(error) = language_plugin_error {
-            ctx_host.add_language_file_diagnostics(vec![(error, None)], None);
+            ctx_host.add_language_file_diagnostics(vec![(error, vec![])], None);
         }
 
         // Partial loader files (Vue/Astro/Svelte) return their directives only if the type-aware
@@ -602,7 +602,7 @@ impl Linter {
             if let Some(markup_directives) = &markup_directives {
                 let messages = create_unused_directives_messages(markup_directives, severity, None);
                 ctx_host.add_language_file_diagnostics(
-                    messages.into_iter().map(|message| (message, None)).collect(),
+                    messages.into_iter().map(|message| (message, vec![])).collect(),
                     None,
                 );
             }
@@ -677,14 +677,12 @@ impl Linter {
         let mut messages: Vec<Message> = language_file
             .into_iter()
             .flat_map(|language_file| language_file.diagnostics)
-            .filter(|(message, rule_name)| {
-                !rule_name.as_deref().is_some_and(|rule_name| {
-                    markup_directives
-                        .as_ref()
-                        .is_some_and(|directives| directives.contains(rule_name, message.span))
-                })
+            .filter(|(message, rule_names)| {
+                !markup_directives
+                    .as_ref()
+                    .is_some_and(|directives| directives.contains_any(rule_names, message.span))
             })
-            .map(|(message, _rule_name)| message)
+            .map(|(message, _rule_names)| message)
             .collect();
         messages.extend(error);
 
@@ -1094,9 +1092,11 @@ impl Linter {
                     let (plugin_name, rule_name) =
                         self.config.resolve_plugin_rule_names(external_rule_id);
 
+                    // A directive can name the rule with the alias of its plugin, or with the
+                    // name of the plugin itself (`vue/no-v-html` for `vuejs/no-v-html`)
                     if ctx_host
                         .disable_directives()
-                        .contains(&format!("{plugin_name}/{rule_name}"), span)
+                        .contains_any(&self.config.directive_rule_names(external_rule_id), span)
                     {
                         continue;
                     }

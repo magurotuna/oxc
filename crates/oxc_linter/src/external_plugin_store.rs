@@ -109,15 +109,19 @@ impl ExternalPluginStore {
         &mut self,
         plugin_path: PathBuf,
         plugin_name: String,
+        canonical_name: Option<String>,
         offset: usize,
         rule_names: Vec<String>,
     ) {
         let newly_inserted = self.registered_plugin_paths.insert(plugin_path);
         assert!(newly_inserted, "register_plugin: plugin already registered");
 
-        let plugin_id = self
-            .plugins
-            .push(ExternalPlugin { name: plugin_name.clone(), rules: FxHashMap::default() });
+        let canonical_name = canonical_name.filter(|name| *name != plugin_name);
+        let plugin_id = self.plugins.push(ExternalPlugin {
+            name: plugin_name.clone(),
+            canonical_name,
+            rules: FxHashMap::default(),
+        });
         self.plugin_names.insert(plugin_name, plugin_id);
 
         assert!(
@@ -203,6 +207,33 @@ impl ExternalPluginStore {
         let external_rule = &self.rules[external_rule_id];
         let plugin = &self.plugins[external_rule.plugin_id];
         (&plugin.name, &external_rule.name)
+    }
+
+    /// Returns the names that disable directives can use for a rule: `plugin/rule`, and also
+    /// `canonical/rule` if the plugin is loaded under an alias. For example, a directive can name
+    /// the `no-v-html` rule of eslint-plugin-vue loaded as `vuejs` as `vuejs/no-v-html` or as
+    /// `vue/no-v-html`, the name that ESLint configs use.
+    pub fn directive_rule_names(&self, external_rule_id: ExternalRuleId) -> Vec<String> {
+        let external_rule = &self.rules[external_rule_id];
+        let plugin = &self.plugins[external_rule.plugin_id];
+        let mut names = vec![format!("{}/{}", plugin.name, external_rule.name)];
+        if let Some(canonical_name) = &plugin.canonical_name {
+            names.push(format!("{canonical_name}/{}", external_rule.name));
+        }
+        names
+    }
+
+    /// Returns the alias of a JS plugin whose own name is `canonical_name` and which has the rule
+    /// `rule_name`. For example, `vuejs` for (`vue`, `no-v-html`) if eslint-plugin-vue is loaded
+    /// as `vuejs`.
+    pub fn find_alias_of_rule(&self, canonical_name: &str, rule_name: &str) -> Option<&str> {
+        self.plugins
+            .iter()
+            .find(|plugin| {
+                plugin.canonical_name.as_deref() == Some(canonical_name)
+                    && plugin.rules.contains_key(rule_name)
+            })
+            .map(|plugin| plugin.name.as_str())
     }
 
     /// Add options to the store and return its [`ExternalOptionsId`].
@@ -324,6 +355,10 @@ impl std::error::Error for ExternalRuleLookupError {}
 #[derive(Debug)]
 struct ExternalPlugin {
     name: String,
+    /// The name of the plugin itself, if the plugin is loaded under an alias and the name differs
+    /// from the alias. For example, `vue` for eslint-plugin-vue loaded as `vuejs`.
+    /// Disable directives can name the rules of the plugin with this name too.
+    canonical_name: Option<String>,
     rules: FxHashMap<String, ExternalRuleId>,
 }
 
@@ -462,5 +497,41 @@ mod test_language_plugin_default_files {
         for entry in ["src/**/*.vue", "**/*.{vue,svelte}", "*", "**/*", "a?.vue", "", "."] {
             assert!(parse(&[entry]).is_err(), "`{entry}` should be an error");
         }
+    }
+}
+
+#[cfg(test)]
+mod test_directive_rule_names {
+    use std::path::PathBuf;
+
+    use super::ExternalPluginStore;
+
+    #[test]
+    fn an_alias_adds_the_name_of_the_plugin_itself() {
+        let mut store = ExternalPluginStore::new(true);
+        store.register_plugin(
+            PathBuf::from("eslint-plugin-vue"),
+            "vuejs".into(),
+            Some("vue".into()),
+            0,
+            vec!["no-v-html".into()],
+        );
+        store.register_plugin(
+            PathBuf::from("eslint-plugin-foo"),
+            "foo".into(),
+            Some("foo".into()),
+            1,
+            vec!["rule".into()],
+        );
+
+        let vue_rule = store.lookup_rule_id("vuejs", "no-v-html").unwrap();
+        assert_eq!(store.directive_rule_names(vue_rule), ["vuejs/no-v-html", "vue/no-v-html"]);
+        // Without an alias, the plugin has one name
+        let foo_rule = store.lookup_rule_id("foo", "rule").unwrap();
+        assert_eq!(store.directive_rule_names(foo_rule), ["foo/rule"]);
+
+        assert_eq!(store.find_alias_of_rule("vue", "no-v-html"), Some("vuejs"));
+        assert_eq!(store.find_alias_of_rule("vue", "no-v-for"), None);
+        assert_eq!(store.find_alias_of_rule("foo", "rule"), None);
     }
 }

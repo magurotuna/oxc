@@ -74,9 +74,10 @@ impl<'s> SpanConverter<'s> {
 /// Result of linting a file with a language plugin. All spans are UTF-8 positions in the whole file.
 #[derive(Debug, Default)]
 pub struct LanguageFileResult {
-    /// Reports of JS plugin rules, with the `plugin/rule` name for disable directives.
-    /// Errors of the plugin itself have no rule name.
-    pub diagnostics: Vec<(Message, Option<String>)>,
+    /// Reports of JS plugin rules, with the names that disable directives can use for the rule
+    /// (see [`crate::ExternalPluginStore::directive_rule_names`]).
+    /// Errors of the plugin itself have no rule names.
+    pub diagnostics: Vec<(Message, Vec<String>)>,
     /// References from the markup to top-level script variables.
     /// `None` if the plugin does not return them.
     pub markup_references: Option<Vec<MarkupReference>>,
@@ -173,7 +174,7 @@ impl Linter {
         let push_error = |result: &mut LanguageFileResult, message: String| {
             result
                 .diagnostics
-                .push((Message::new(OxcDiagnostic::error(message), PossibleFixes::None), None));
+                .push((Message::new(OxcDiagnostic::error(message), PossibleFixes::None), vec![]));
         };
 
         // JS gets the source text without a BOM, as for other files
@@ -247,7 +248,7 @@ impl Linter {
                         )),
                     PossibleFixes::None,
                 ),
-                None,
+                vec![],
             ));
         }
 
@@ -307,7 +308,7 @@ impl Linter {
                         .with_severity(severity.into()),
                     possible_fixes,
                 ),
-                Some(format!("{rule_plugin_name}/{rule_name}")),
+                self.config.directive_rule_names(external_rule_id),
             ));
             for message in fix_errors {
                 push_error(&mut result, message);
