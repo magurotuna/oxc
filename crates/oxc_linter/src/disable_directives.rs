@@ -460,7 +460,9 @@ impl DisableDirectives {
         // This ensures that diagnostics starting before the disable comment (like no-empty-file)
         // are still suppressed.
         let mut has_match = false;
-        for interval in self.intervals.find(span.start, span.end) {
+        // `find` gives no interval that starts at an empty span, so look the span up as one byte
+        let query_end = span.end.max(span.start.saturating_add(1));
+        for interval in self.intervals.find(span.start, query_end) {
             // Check if this rule should be disabled
             let rule_matches = match &interval.val {
                 DisabledRule::All { .. } => true,
@@ -493,6 +495,13 @@ impl DisableDirectives {
                 // For next-line directives, only check if the diagnostic starts within the interval
                 // We intentionally only check span.start (not span.end) to avoid suppressing
                 // diagnostics for large constructs that merely contain the disabled line
+                #[expect(clippy::suspicious_operation_groupings)]
+                {
+                    span.start >= interval.start && span.start < interval.stop
+                }
+            } else if span.is_empty() {
+                // An empty span is a position, which is covered if the interval contains it.
+                // For example, a report at the start of the file and a markup directive there.
                 #[expect(clippy::suspicious_operation_groupings)]
                 {
                     span.start >= interval.start && span.start < interval.stop
@@ -594,6 +603,11 @@ pub struct DisableDirectivesBuilder {
     respect_eslint_disable_directives: bool,
     /// Whether reports of unused directives can have fixes. See [`DisableRuleComment::fixable`].
     fixable: bool,
+    /// Whether a block directive (`eslint-disable`) starts at the start of its comment, as in
+    /// ESLint, instead of at its end. `true` for comments in markup: rules of markup can report
+    /// at the start of the file, before or at the comment (for example,
+    /// `vue/multi-word-component-names` reports at 1:1).
+    starts_at_comment: bool,
     /// All the disabled rules with their corresponding covering spans
     intervals: Lapper<u32, DisabledRule>,
     /// Start of `eslint-disable` or `oxlint-disable`
@@ -613,6 +627,7 @@ impl DisableDirectivesBuilder {
         Self {
             respect_eslint_disable_directives: true,
             fixable: true,
+            starts_at_comment: false,
             intervals: Lapper::new(vec![]),
             disable_all_start: None,
             disable_start_map: FxHashMap::default(),
@@ -650,6 +665,7 @@ impl DisableDirectivesBuilder {
         comments: impl IntoIterator<Item = (Span, Span)>,
     ) -> DisableDirectives {
         self.fixable = false;
+        self.starts_at_comment = true;
         self.build_impl(source_text, comments);
         self.finish()
     }
@@ -738,17 +754,15 @@ impl DisableDirectivesBuilder {
 
             let rule_names = Self::collect_rule_names(rule_list_text);
             let rule_list_start = comment_span.end - rule_list_text.len() as u32;
+            let block_start =
+                if self.starts_at_comment { outer_span.start } else { comment_span.end };
 
             match directive_kind {
                 DirectiveKind::Disable => {
                     if rule_names.is_empty() {
                         if self.disable_all_start.is_none() {
-                            self.disable_all_start = Some((
-                                comment_span.end,
-                                directive_prefix,
-                                outer_span,
-                                comment_fix_span,
-                            ));
+                            self.disable_all_start =
+                                Some((block_start, directive_prefix, outer_span, comment_fix_span));
                         }
                         self.disable_rule_comments.push(DisableRuleComment {
                             directive_prefix,
@@ -763,7 +777,7 @@ impl DisableDirectivesBuilder {
                         for (rule_name, name_span) in rule_names {
                             let name_span = name_span.move_right(rule_list_start);
                             self.disable_start_map.entry(rule_name.to_string()).or_insert((
-                                comment_span.end,
+                                block_start,
                                 directive_prefix,
                                 name_span,
                                 outer_span,
@@ -2458,6 +2472,38 @@ function test() {
         );
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].fixes, PossibleFixes::None));
+    }
+
+    #[test]
+    fn a_markup_block_directive_covers_a_report_at_its_start() {
+        // `vue/multi-word-component-names` reports at 1:1, which is the start of this comment.
+        // Before, a block directive started at the end of its comment, so the report stayed.
+        let source_text = "<!-- eslint-disable vue/multi-word-component-names -->\n<template><p></p></template>\n";
+        let comment =
+            find_span(source_text, "<!-- eslint-disable vue/multi-word-component-names -->");
+        let directives = DisableDirectivesBuilder::new()
+            .build_markup(source_text, [(comment, Span::new(comment.start + 4, comment.end - 3))]);
+        assert!(directives.contains("vue/multi-word-component-names", Span::empty(0)));
+        assert!(
+            directives
+                .contains("vue/multi-word-component-names", find_span(source_text, "<p></p>"))
+        );
+        assert!(!directives.contains("vue/no-v-html", Span::empty(0)));
+    }
+
+    #[test]
+    fn a_block_directive_in_a_script_starts_at_the_end_of_its_comment() {
+        let source_text = "debugger; /* eslint-disable no-debugger */debugger;\n";
+        let allocator = Allocator::default();
+        let semantic = process_source(&allocator, source_text);
+        let directives =
+            DisableDirectivesBuilder::new().build(semantic.source_text(), semantic.comments());
+        #[expect(clippy::cast_possible_truncation)]
+        let comment_end = (source_text.find("*/").unwrap() + 2) as u32;
+        assert!(!directives.contains("no-debugger", Span::sized(0, 9)));
+        // Unlike in markup, the start of the comment is not covered
+        assert!(!directives.contains("no-debugger", Span::empty(10)));
+        assert!(directives.contains("no-debugger", Span::sized(comment_end, 9)));
     }
 
     #[test]
