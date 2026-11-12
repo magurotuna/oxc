@@ -30,6 +30,32 @@ debugger;
 --------------------"
 `;
 
+exports[`LSP code actions > basic code actions > should handle js-plugin-alias/test.js 1`] = `
+"--- FILE -----------
+js-plugin-alias/test.js
+--- Original Content ---------
+// eslint-disable-next-line no-console
+debugger;
+
+--- Code Actions ---------
+
+Title : Disable foo/no-debugger for this line
+Preferred: No
+Resulting Content:
+// eslint-disable-next-line no-console foo/no-debugger
+debugger;
+######
+
+Title : Disable foo/no-debugger for this whole file
+Preferred: No
+Resulting Content:
+// oxlint-disable foo/no-debugger
+// eslint-disable-next-line no-console
+debugger;
+
+--------------------"
+`;
+
 exports[`LSP code actions > basic code actions > should handle js-plugin-fix/non-zero-offset.js 1`] = `
 "--- FILE -----------
 js-plugin-fix/non-zero-offset.js

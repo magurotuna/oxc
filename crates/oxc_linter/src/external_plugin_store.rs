@@ -213,6 +213,9 @@ impl ExternalPluginStore {
     /// `canonical/rule` if the plugin is loaded under an alias. For example, a directive can name
     /// the `no-v-html` rule of eslint-plugin-vue loaded as `vuejs` as `vuejs/no-v-html` or as
     /// `vue/no-v-html`, the name that ESLint configs use.
+    ///
+    /// The name with the plugin's own name comes last, so the last name is the one to write in new
+    /// disable comments.
     pub fn directive_rule_names(&self, external_rule_id: ExternalRuleId) -> Vec<String> {
         let external_rule = &self.rules[external_rule_id];
         let plugin = &self.plugins[external_rule.plugin_id];

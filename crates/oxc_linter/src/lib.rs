@@ -1093,11 +1093,9 @@ impl Linter {
                         self.config.resolve_plugin_rule_names(external_rule_id);
 
                     // A directive can name the rule with the alias of its plugin, or with the
-                    // name of the plugin itself (`vue/no-v-html` for `vuejs/no-v-html`)
-                    if ctx_host
-                        .disable_directives()
-                        .contains_any(&self.config.directive_rule_names(external_rule_id), span)
-                    {
+                    // plugin's own name (`vue/no-v-html` for `vuejs/no-v-html`)
+                    let directive_rule_names = self.config.directive_rule_names(external_rule_id);
+                    if ctx_host.disable_directives().contains_any(&directive_rule_names, span) {
                         continue;
                     }
 
@@ -1148,13 +1146,19 @@ impl Linter {
                         PossibleFixes::from(fix)
                     };
 
-                    ctx_host.push_diagnostic(Message::new(
-                        OxcDiagnostic::error(diagnostic.message)
-                            .with_label(span)
-                            .with_error_code(plugin_name.to_string(), rule_name.to_string())
-                            .with_severity(severity.into()),
-                        possible_fixes,
-                    ));
+                    // The ignore fixes use the plugin's own name, which comes last
+                    let directive_rule_name =
+                        directive_rule_names.last().expect("a rule has at least one name");
+                    ctx_host.push_external_rule_diagnostic(
+                        Message::new(
+                            OxcDiagnostic::error(diagnostic.message)
+                                .with_label(span)
+                                .with_error_code(plugin_name.to_string(), rule_name.to_string())
+                                .with_severity(severity.into()),
+                            possible_fixes,
+                        ),
+                        directive_rule_name,
+                    );
                 }
             }
             Err(LintFileFailure { message: error, timings }) => {

@@ -12,6 +12,19 @@ enum DisableDirective {
 
 impl Message {
     pub(crate) fn add_ignore_fix(&mut self, section_offset: u32, section_source_text: &str) {
+        let Some(rule_name) = oxc_code_short_canonical_name(&self.error.code) else { return };
+        self.add_ignore_fix_with_rule_name(&rule_name, section_offset, section_source_text);
+    }
+
+    /// Add fixes that disable the rule `rule_name` for the line or the section of this message.
+    /// Use this instead of [`Message::add_ignore_fix`] if a disable comment names the rule
+    /// differently from the code of the message.
+    pub(crate) fn add_ignore_fix_with_rule_name(
+        &mut self,
+        rule_name: &str,
+        section_offset: u32,
+        section_source_text: &str,
+    ) {
         // If the error is exactly at the section offset and has 0 span length, it means that the file is the problem
         // and attaching a ignore comment would not ignore the error.
         // This is because the ignore comment would need to be placed before the error offset, which is not possible.
@@ -30,11 +43,9 @@ impl Message {
             return;
         }
 
-        let Some(rule_name) = oxc_code_short_canonical_name(&self.error.code) else { return };
-
         self.fixes.extend_fix(vec![
-            disable_for_this_line(&rule_name, self.span.start, section_offset, section_source_text),
-            disable_for_this_section(&rule_name, section_offset, section_source_text),
+            disable_for_this_line(rule_name, self.span.start, section_offset, section_source_text),
+            disable_for_this_section(rule_name, section_offset, section_source_text),
         ]);
     }
 }

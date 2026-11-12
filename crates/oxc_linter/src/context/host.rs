@@ -466,6 +466,30 @@ impl<'a> ContextHost<'a> {
             let source_text = self.source_text();
             diagnostic.add_ignore_fix(self.current_sub_host().source_text_offset, source_text);
         }
+        self.push_diagnostic_without_ignore_fix(diagnostic);
+    }
+
+    /// Add a report of a JS plugin rule. The ignore fixes name the rule `directive_rule_name`,
+    /// which can differ from the code of the report: for a plugin that is loaded under an alias,
+    /// it is the name with the plugin's own name, which ESLint also understands.
+    pub(crate) fn push_external_rule_diagnostic(
+        &self,
+        mut diagnostic: Message,
+        directive_rule_name: &str,
+    ) {
+        if self.with_ignore_fixes {
+            let source_text = self.source_text();
+            diagnostic.add_ignore_fix_with_rule_name(
+                directive_rule_name,
+                self.current_sub_host().source_text_offset,
+                source_text,
+            );
+        }
+        self.push_diagnostic_without_ignore_fix(diagnostic);
+    }
+
+    #[inline]
+    fn push_diagnostic_without_ignore_fix(&self, mut diagnostic: Message) {
         if self.current_sub_host().source_text_offset != 0 {
             diagnostic.move_offset(self.current_sub_host().source_text_offset);
         }

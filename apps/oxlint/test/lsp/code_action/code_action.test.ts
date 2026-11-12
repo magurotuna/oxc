@@ -12,6 +12,8 @@ describe("LSP code actions", () => {
       ["js-plugin-fix/test.js", "javascript"],
       ["js-plugin-fix/non-zero-offset.js", "javascript"],
       ["js-plugin-suggestion/test.js", "javascript"],
+      // The disable comments name the rule with the plugin's own name, not with its alias
+      ["js-plugin-alias/test.js", "javascript"],
     ])("should handle %s", async (path, languageId) => {
       expect(await fixFixture(FIXTURES_DIR, path, languageId)).toMatchSnapshot();
     });

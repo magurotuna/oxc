@@ -1,0 +1,8 @@
+{
+  // `meta.name` of the plugin is `eslint-plugin-foo`
+  "jsPlugins": [{ "name": "foojs", "specifier": "./plugin.ts" }],
+  "rules": {
+    "foojs/no-debugger": "error",
+    "no-debugger": "off",
+  },
+}
