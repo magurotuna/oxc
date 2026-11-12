@@ -6,6 +6,7 @@
 
 use std::{collections::BTreeMap, iter, path::Path, sync::Arc};
 
+use cow_utils::CowUtils;
 use oxc_ast_visit::utf8_to_utf16::Utf8ToUtf16;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_span::Span;
@@ -111,15 +112,26 @@ impl LanguageFileResult {
             else {
                 continue;
             };
-            // The text of the comment, without its delimiters (such as `<!--` and `-->`)
-            let Some(text_start) = comment_text.find(comment.text.as_str()) else { continue };
+            // The text of the comment, without its delimiters (such as `<!--` and `-->`).
+            // Parsers can give `\n` for each `\r\n` of the file (vue-eslint-parser does).
+            let Some((text_start, text_len)) = comment_text
+                .find(comment.text.as_str())
+                .map(|start| (start, comment.text.len()))
+                .or_else(|| {
+                    let lf_text = comment.text.cow_replace("\r\n", "\n");
+                    let text = lf_text.cow_replace('\n', "\r\n");
+                    comment_text.find(&*text).map(|start| (start, text.len()))
+                })
+            else {
+                continue;
+            };
             if comment.end > scope_end {
                 continue;
             }
             #[expect(clippy::cast_possible_truncation)]
             let text_start = comment.start + text_start as u32;
             #[expect(clippy::cast_possible_truncation)]
-            let text_span = Span::new(text_start, text_start + comment.text.len() as u32);
+            let text_span = Span::new(text_start, text_start + text_len as u32);
             groups
                 .entry(scope_end)
                 .or_default()
@@ -330,6 +342,7 @@ impl Linter {
 
 #[cfg(test)]
 mod tests {
+    use cow_utils::CowUtils;
     use oxc_span::Span;
 
     use super::{LanguageFileResult, SpanConverter};
@@ -414,6 +427,22 @@ mod tests {
                 Span::sized(emoji_start, 4),
             );
         }
+    }
+
+    #[test]
+    fn a_comment_text_with_lf_matches_a_comment_with_crlf() {
+        // vue-eslint-parser gives the text of an HTML comment with `\n` for each `\r\n`.
+        // Before, the text was not found in the file, and the directive was dropped.
+        let source_text = "<template>\r\n  <!-- eslint-disable-next-line\r\n    no-debugger -->\r\n  <p></p>\r\n</template>\r\n";
+        let mut markup_comment =
+            comment(source_text, "<!-- eslint-disable-next-line\r\n    no-debugger -->", None);
+        markup_comment.text = markup_comment.text.cow_replace("\r\n", "\n").into_owned();
+        let result = LanguageFileResult {
+            markup_comments: vec![markup_comment],
+            ..LanguageFileResult::default()
+        };
+        let directives = result.markup_directives(source_text, true).unwrap();
+        assert!(directives.contains("no-debugger", span_of(source_text, "<p></p>")));
     }
 
     #[test]
