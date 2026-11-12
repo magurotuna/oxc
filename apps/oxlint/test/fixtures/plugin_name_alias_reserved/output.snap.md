@@ -20,6 +20,10 @@ Failed to parse oxlint configuration file.
   |   "jsdoc-js/rule-name": "error"
   | }
   | 
+  | Disable comments can name the rules with the alias or with the plugin's own name.
+  | If the plugin's own name is 'jsdoc', then `// eslint-disable-next-line jsdoc/rule-name`
+  | also disables 'jsdoc-js/rule-name'.
+  | 
   | See: https://oxc.rs/docs/guide/usage/linter/js-plugins.html
 ```
 

@@ -20,6 +20,10 @@ Failed to parse oxlint configuration file.
   |   "import-js/rule-name": "error"
   | }
   | 
+  | Disable comments can name the rules with the alias or with the plugin's own name.
+  | If the plugin's own name is 'import', then `// eslint-disable-next-line import/rule-name`
+  | also disables 'import-js/rule-name'.
+  | 
   | See: https://oxc.rs/docs/guide/usage/linter/js-plugins.html
 ```
 

@@ -238,6 +238,15 @@ pub struct Oxlintrc {
     ///   }
     /// }
     /// ```
+    ///
+    /// Disable comments can name a rule of an aliased JS plugin with the alias or with the
+    /// plugin's own name. The plugin's own name is its `meta.name`, or else its package name,
+    /// without a prefix such as `eslint-plugin-`. In the example above,
+    /// `// eslint-disable-next-line import-js/no-unresolved` and
+    /// `// eslint-disable-next-line import/no-unresolved` both disable the `no-unresolved` rule of
+    /// eslint-plugin-import. So the existing disable comments of a project that uses ESLint keep
+    /// working. In `rules`, the names stay separate: `import/...` is a native rule, and
+    /// `import-js/...` is a rule of the JS plugin.
     #[serde(rename = "jsPlugins", default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "external_plugins_schema")]
     pub external_plugins: Option<FxHashSet<ExternalPluginEntry>>,

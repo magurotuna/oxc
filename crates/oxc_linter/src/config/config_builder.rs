@@ -984,6 +984,10 @@ impl Display for ConfigBuilderError {
                      \n\
                      \"rules\": {{\n  \"{plugin_name}-js/rule-name\": \"error\"\n}}\n\
                      \n\
+                     Disable comments can name the rules with the alias or with the plugin's own name.\n\
+                     If the plugin's own name is '{plugin_name}', then `// eslint-disable-next-line {plugin_name}/rule-name`\n\
+                     also disables '{plugin_name}-js/rule-name'.\n\
+                     \n\
                      See: https://oxc.rs/docs/guide/usage/linter/js-plugins.html",
                 )?;
                 Ok(())

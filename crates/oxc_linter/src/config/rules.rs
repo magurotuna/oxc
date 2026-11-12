@@ -39,6 +39,9 @@ pub enum OverrideRulesError {
         plugin_name: String,
         /// The missing rule name
         rule_name: String,
+        /// The alias of a JS plugin whose own name is `plugin_name` and which has the rule.
+        /// For example, `vuejs` for `vue/no-v-html` if eslint-plugin-vue is loaded as `vuejs`.
+        alias: Option<String>,
     },
     /// Error looking up an external rule
     ExternalRuleLookup(ExternalRuleLookupError),
@@ -54,8 +57,15 @@ pub enum OverrideRulesError {
 impl fmt::Display for OverrideRulesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OverrideRulesError::RuleNotFound { plugin_name, rule_name } => {
-                write!(f, "Rule '{rule_name}' not found in plugin '{plugin_name}'")
+            OverrideRulesError::RuleNotFound { plugin_name, rule_name, alias } => {
+                write!(f, "Rule '{rule_name}' not found in plugin '{plugin_name}'")?;
+                if let Some(alias) = alias {
+                    write!(
+                        f,
+                        ". Did you mean '{alias}/{rule_name}'? The JS plugin '{plugin_name}' is loaded under the alias '{alias}'."
+                    )?;
+                }
+                Ok(())
             }
             OverrideRulesError::ExternalRuleLookup(e) => write!(f, "{e}"),
             OverrideRulesError::RuleConfiguration { rule_name, message } => {
@@ -193,6 +203,9 @@ impl OxlintRules {
                         errors.push(OverrideRulesError::RuleNotFound {
                             plugin_name: plugin_name.to_string(),
                             rule_name: rule_name.to_string(),
+                            alias: external_plugin_store
+                                .find_alias_of_rule(plugin_name, rule_name)
+                                .map(ToString::to_string),
                         });
                     }
                 } else {
@@ -213,7 +226,20 @@ impl OxlintRules {
                                     .or_insert((options_id, severity));
                             }
                             Err(e) => {
-                                let error = OverrideRulesError::ExternalRuleLookup(e);
+                                // If the plugin is loaded under an alias, suggest the alias
+                                let error =
+                                    if let ExternalRuleLookupError::PluginNotFound { .. } = e
+                                        && let Some(alias) = external_plugin_store
+                                            .find_alias_of_rule(plugin_name, rule_name)
+                                    {
+                                        OverrideRulesError::RuleNotFound {
+                                            plugin_name: plugin_name.to_string(),
+                                            rule_name: rule_name.to_string(),
+                                            alias: Some(alias.to_string()),
+                                        }
+                                    } else {
+                                        OverrideRulesError::ExternalRuleLookup(e)
+                                    };
                                 if !errors.contains(&error) {
                                     errors.push(error);
                                 }

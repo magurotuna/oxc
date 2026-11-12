@@ -1,0 +1,18 @@
+{
+  "plugins": ["vue"],
+  "jsPlugins": [
+    // `meta.name` is `eslint-plugin-vue`
+    { "name": "vuejs", "specifier": "./plugins/vue.ts" },
+    // `meta.name` is `eslint-plugin-foo`
+    { "name": "foojs", "specifier": "./plugins/foo.ts" }
+  ],
+  "categories": { "correctness": "off" },
+  "rules": {
+    // No native rule has this name. The error suggests `vuejs/no-v-html`.
+    "vue/no-v-html": "error",
+    // No plugin is named `foo`. The error suggests `foojs/rule`.
+    "foo/rule": "error",
+    // No hint, because the JS plugin has no rule with this name
+    "vue/no-such-rule": "error"
+  }
+}
