@@ -923,12 +923,9 @@ fn disabled_rules_in_content_mapped_file(path: &Path) -> &'static [&'static str]
     }
 }
 
-const DISABLED_RULES_IN_VUE_FILES: &[&str] = &[
-    // The Vue mapper turns an inline handler such as `@click="select(item)"` into an arrow
-    // function that returns `select(item)`, so the rule reports a returned void expression that
-    // the user did not write. In element-plus, 38 of 90 reports were of this kind.
-    "no-confusing-void-expression",
-];
+// `no-confusing-void-expression` is not disabled: tsrs-lint skips a `return` that the Vue mapper
+// wrote for an inline handler such as `@click="select(item)"`.
+const DISABLED_RULES_IN_VUE_FILES: &[&str] = &[];
 const DISABLED_RULES_IN_SVELTE_FILES: &[&str] = &[
     // Svelte types `$props()` as `any`, and every component destructures it, as in
     // `let { a }: Props = $props()`. In immich, 328 of 459 reports were of this kind.
@@ -2257,7 +2254,7 @@ mod test {
         use super::disabled_rules_in_content_mapped_file;
         use crate::rules::RULES;
 
-        for file in ["App.vue", "App.svelte", "App.astro"] {
+        for file in ["App.svelte", "App.astro"] {
             let disabled = disabled_rules_in_content_mapped_file(Path::new(file));
             assert!(!disabled.is_empty(), "{file}");
             for name in disabled {
@@ -2267,6 +2264,7 @@ mod test {
                 );
             }
         }
+        assert_eq!(disabled_rules_in_content_mapped_file(Path::new("App.vue")), [] as [&str; 0]);
         assert_eq!(disabled_rules_in_content_mapped_file(Path::new("index.ts")), [] as [&str; 0]);
     }
 
